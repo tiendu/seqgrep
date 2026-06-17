@@ -37,14 +37,14 @@ from seqgrep.codecs import (
     TargetEncoding,
 )
 from seqgrep.exact import ExactMatcher
-from seqgrep.fasta import FastaFileReader
-from seqgrep.models import AmbigMode, FastaRecord, Match, SearchQuery, SequenceType
+from seqgrep.fastx import FastxReader
+from seqgrep.models import AmbigMode, SequenceRecord, Match, SearchQuery, SequenceType
 from seqgrep.planner import SearchPlanner
 from seqgrep.window import WindowMatcher
 
 
 def search_with_planner(
-    record: FastaRecord,
+    record: SequenceRecord,
     query: SearchQuery,
     *,
     jobs: int = 1,
@@ -314,22 +314,22 @@ def test_planner_uses_chunked_matcher_when_jobs_exceed_one() -> None:
 
 
 def test_default_mode_is_exact_nucleotide() -> None:
-    hits = search_with_planner(FastaRecord("seq1", "ATGNATGA"), SearchQuery("ATGN"))
+    hits = search_with_planner(SequenceRecord("seq1", "ATGNATGA"), SearchQuery("ATGN"))
     assert hit_values(hits) == [(1, 4, "ATGN")]
 
 
 def test_exact_matcher_finds_overlapping_hits() -> None:
-    hits = search_with_planner(FastaRecord("seq1", "AAAA"), SearchQuery("AA"))
+    hits = search_with_planner(SequenceRecord("seq1", "AAAA"), SearchQuery("AA"))
     assert hit_values(hits) == [(1, 2, "AA"), (2, 3, "AA"), (3, 4, "AA")]
 
 
 def test_default_nucleotide_mode_treats_u_as_t() -> None:
-    hits = search_with_planner(FastaRecord("rna", "AUGATG"), SearchQuery("ATG"))
+    hits = search_with_planner(SequenceRecord("rna", "AUGATG"), SearchQuery("ATG"))
     assert hit_values(hits) == [(1, 3, "AUG"), (4, 6, "ATG")]
 
 
 def test_exact_nucleotide_gaps_are_literal() -> None:
-    record = FastaRecord("aligned", "A-C.A.C")
+    record = SequenceRecord("aligned", "A-C.A.C")
 
     assert hit_values(search_with_planner(record, SearchQuery("A-C"))) == [(1, 3, "A-C")]
     assert hit_values(search_with_planner(record, SearchQuery("A.C"))) == [
@@ -338,7 +338,7 @@ def test_exact_nucleotide_gaps_are_literal() -> None:
 
 
 def test_iupac_gaps_are_equivalent() -> None:
-    record = FastaRecord("aligned", "A-C A.C")
+    record = SequenceRecord("aligned", "A-C A.C")
     query = SearchQuery("A-C", ambig=True)
 
     assert hit_values(search_with_planner(record, query)) == [
@@ -349,7 +349,7 @@ def test_iupac_gaps_are_equivalent() -> None:
 
 def test_iupac_query_n_matches_any_canonical_base() -> None:
     hits = search_with_planner(
-        FastaRecord("seq1", "ACGT"),
+        SequenceRecord("seq1", "ACGT"),
         SearchQuery("N", ambig=True),
     )
     assert hit_values(hits) == [
@@ -362,14 +362,14 @@ def test_iupac_query_n_matches_any_canonical_base() -> None:
 
 def test_iupac_target_n_does_not_act_as_wildcard() -> None:
     hits = search_with_planner(
-        FastaRecord("seq1", "ATGNATGA"),
+        SequenceRecord("seq1", "ATGNATGA"),
         SearchQuery("ATGN", ambig=True),
     )
     assert hit_values(hits) == [(5, 8, "ATGA")]
 
 
 def test_iupac_query_does_not_match_unknown_target_region() -> None:
-    record = FastaRecord("assembly_gap", "N" * 256)
+    record = SequenceRecord("assembly_gap", "N" * 256)
 
     assert search_with_planner(record, SearchQuery("ACGT", ambig=True)) == []
     assert search_with_planner(record, SearchQuery("NNNN", ambig=True)) == []
@@ -377,7 +377,7 @@ def test_iupac_query_does_not_match_unknown_target_region() -> None:
 
 def test_both_mode_matches_ambiguous_target_symbols() -> None:
     hits = search_with_planner(
-        FastaRecord("uncertain", "NNANN"),
+        SequenceRecord("uncertain", "NNANN"),
         SearchQuery("AAAAA", ambig_mode=AmbigMode.BOTH),
     )
 
@@ -386,7 +386,7 @@ def test_both_mode_matches_ambiguous_target_symbols() -> None:
 
 def test_both_mode_matches_n_query_to_n_target() -> None:
     hits = search_with_planner(
-        FastaRecord("uncertain", "NNNNN"),
+        SequenceRecord("uncertain", "NNNNN"),
         SearchQuery("NNNNN", ambig_mode=AmbigMode.BOTH),
     )
 
@@ -395,7 +395,7 @@ def test_both_mode_matches_n_query_to_n_target() -> None:
 
 def test_query_mode_still_rejects_ambiguous_target_symbols() -> None:
     hits = search_with_planner(
-        FastaRecord("uncertain", "NNANN"),
+        SequenceRecord("uncertain", "NNANN"),
         SearchQuery("AAAAA", ambig_mode=AmbigMode.QUERY),
     )
 
@@ -403,13 +403,13 @@ def test_query_mode_still_rejects_ambiguous_target_symbols() -> None:
 
 
 def test_exact_mode_still_matches_target_n_literally() -> None:
-    hits = search_with_planner(FastaRecord("gap", "NNNN"), SearchQuery("NN"))
+    hits = search_with_planner(SequenceRecord("gap", "NNNN"), SearchQuery("NN"))
     assert hit_values(hits) == [(1, 2, "NN"), (2, 3, "NN"), (3, 4, "NN")]
 
 
 def test_protein_mode_matches_exact_amino_acids() -> None:
     hits = search_with_planner(
-        FastaRecord("ras", "XXMTEYKLVVVGAGGVGKSALXX"),
+        SequenceRecord("ras", "XXMTEYKLVVVGAGGVGKSALXX"),
         SearchQuery("MTEYK", sequence_type=SequenceType.AMINO_ACID),
     )
     assert hit_values(hits) == [(3, 7, "MTEYK")]
@@ -417,7 +417,7 @@ def test_protein_mode_matches_exact_amino_acids() -> None:
 
 def test_protein_extended_symbols_are_literal() -> None:
     hits = search_with_planner(
-        FastaRecord("protein", "MAXMAB"),
+        SequenceRecord("protein", "MAXMAB"),
         SearchQuery("MAX", sequence_type=SequenceType.AMINO_ACID),
     )
     assert hit_values(hits) == [(1, 3, "MAX")]
@@ -441,7 +441,7 @@ def test_protein_mode_rejects_ambig_and_revcomp() -> None:
 
 def test_reverse_complement_match() -> None:
     hits = search_with_planner(
-        FastaRecord("seq1", "CCCATGAAGTCCC"),
+        SequenceRecord("seq1", "CCCATGAAGTCCC"),
         SearchQuery("ACTTCAT", revcomp=True),
     )
     assert any(
@@ -452,7 +452,7 @@ def test_reverse_complement_match() -> None:
 
 def test_circular_exact_match() -> None:
     hits = search_with_planner(
-        FastaRecord("plasmid", "CCCAAATTT"),
+        SequenceRecord("plasmid", "CCCAAATTT"),
         SearchQuery("TTTCCC", circular=True),
     )
     assert hits == [
@@ -469,7 +469,7 @@ def test_circular_exact_match() -> None:
 
 def test_circular_pattern_longer_than_sequence() -> None:
     hits = search_with_planner(
-        FastaRecord("tiny", "ATG"),
+        SequenceRecord("tiny", "ATG"),
         SearchQuery("ATGAT", circular=True),
     )
     assert hit_values(hits) == [(1, 2, "ATGAT")]
@@ -477,7 +477,7 @@ def test_circular_pattern_longer_than_sequence() -> None:
 
 def test_circular_protein_match() -> None:
     hits = search_with_planner(
-        FastaRecord("ring", "CDEMA"),
+        SequenceRecord("ring", "CDEMA"),
         SearchQuery("MAC", circular=True, sequence_type=SequenceType.AMINO_ACID),
     )
     assert hit_values(hits) == [(4, 1, "MAC")]
@@ -489,7 +489,7 @@ def test_circular_protein_match() -> None:
 
 
 def assert_chunked_matches_serial(
-    record: FastaRecord,
+    record: SequenceRecord,
     query: SearchQuery,
     *,
     chunk_size: int,
@@ -502,7 +502,7 @@ def assert_chunked_matches_serial(
 
 def test_chunked_exact_nucleotide_packed_target() -> None:
     hits = assert_chunked_matches_serial(
-        FastaRecord("seq1", "AAAAATGCAAAAA"),
+        SequenceRecord("seq1", "AAAAATGCAAAAA"),
         SearchQuery("TGCA"),
         chunk_size=6,
     )
@@ -511,7 +511,7 @@ def test_chunked_exact_nucleotide_packed_target() -> None:
 
 def test_chunked_exact_nucleotide_five_bit_target() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("seq1", "ATGNATGA"),
+        SequenceRecord("seq1", "ATGNATGA"),
         SearchQuery("ATGN"),
         chunk_size=3,
     )
@@ -519,7 +519,7 @@ def test_chunked_exact_nucleotide_five_bit_target() -> None:
 
 def test_chunked_iupac_packed_target() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("seq1", "ATGAATGT"),
+        SequenceRecord("seq1", "ATGAATGT"),
         SearchQuery("ATGN", ambig=True),
         chunk_size=3,
     )
@@ -527,7 +527,7 @@ def test_chunked_iupac_packed_target() -> None:
 
 def test_chunked_iupac_validity_and_gap_bitmaps() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("seq1", "A-CATGNA.C"),
+        SequenceRecord("seq1", "A-CATGNA.C"),
         SearchQuery("A.C", ambig=True),
         chunk_size=2,
     )
@@ -535,7 +535,7 @@ def test_chunked_iupac_validity_and_gap_bitmaps() -> None:
 
 def test_chunked_iupac_does_not_match_unknown_target_region() -> None:
     hits = assert_chunked_matches_serial(
-        FastaRecord("assembly_gap", "N" * 256),
+        SequenceRecord("assembly_gap", "N" * 256),
         SearchQuery("NNNN", ambig=True),
         chunk_size=31,
     )
@@ -544,7 +544,7 @@ def test_chunked_iupac_does_not_match_unknown_target_region() -> None:
 
 def test_chunked_symmetric_iupac_target_matches_serial() -> None:
     hits = assert_chunked_matches_serial(
-        FastaRecord("uncertain", "NNANN"),
+        SequenceRecord("uncertain", "NNANN"),
         SearchQuery("AAAAA", ambig_mode=AmbigMode.BOTH),
         chunk_size=2,
     )
@@ -553,7 +553,7 @@ def test_chunked_symmetric_iupac_target_matches_serial() -> None:
 
 def test_chunked_protein_5bit_target() -> None:
     hits = assert_chunked_matches_serial(
-        FastaRecord("protein", "AAAAAMTEYKAAAAA"),
+        SequenceRecord("protein", "AAAAAMTEYKAAAAA"),
         SearchQuery("MTEYK", sequence_type=SequenceType.AMINO_ACID),
         chunk_size=6,
     )
@@ -562,7 +562,7 @@ def test_chunked_protein_5bit_target() -> None:
 
 def test_chunked_circular_and_reverse_complement() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("plasmid", "CCCAAATTT"),
+        SequenceRecord("plasmid", "CCCAAATTT"),
         SearchQuery("GGGAAA", revcomp=True, circular=True, ambig=True),
         chunk_size=4,
     )
@@ -570,14 +570,14 @@ def test_chunked_circular_and_reverse_complement() -> None:
 
 def test_chunked_longer_circular_pattern() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("tiny", "ATG"),
+        SequenceRecord("tiny", "ATG"),
         SearchQuery("ATGAT", circular=True),
         chunk_size=2,
     )
 
 
 def test_models_normalize_symbols_once_at_the_boundary() -> None:
-    assert FastaRecord("seq", "a c\ng").sequence == "ACG"
+    assert SequenceRecord("seq", "a c\ng").sequence == "ACG"
     assert SearchQuery("a t\ng").pattern == "ATG"
 
 
@@ -660,10 +660,10 @@ def test_read_fasta_plain_and_gzip(tmp_path: Path) -> None:
     with gzip.open(upper_gz, "wt", encoding="utf-8") as handle:
         handle.write(">seq1 description\nATG\nCCC\n")
 
-    expected = [FastaRecord("seq1", "ATGCCC")]
-    assert list(FastaFileReader(fasta).read()) == expected
-    assert list(FastaFileReader(gz).read()) == expected
-    assert list(FastaFileReader(upper_gz).read()) == expected
+    expected = [SequenceRecord("seq1", "ATGCCC")]
+    assert list(FastxReader(fasta).read()) == expected
+    assert list(FastxReader(gz).read()) == expected
+    assert list(FastxReader(upper_gz).read()) == expected
 
 
 def test_read_multiline_fastq_plain_and_gzip(tmp_path: Path) -> None:
@@ -676,9 +676,9 @@ def test_read_multiline_fastq_plain_and_gzip(tmp_path: Path) -> None:
     with gzip.open(gz, "wt", encoding="utf-8") as handle:
         handle.write(fastq_text)
 
-    expected = [FastaRecord("read1", "ATGC")]
-    assert list(FastaFileReader(fastq).read()) == expected
-    assert list(FastaFileReader(gz).read()) == expected
+    expected = [SequenceRecord("read1", "ATGC")]
+    assert list(FastxReader(fastq).read()) == expected
+    assert list(FastxReader(gz).read()) == expected
 
 
 def test_fastq_rejects_quality_length_mismatch(tmp_path: Path) -> None:
@@ -686,4 +686,4 @@ def test_fastq_rejects_quality_length_mismatch(tmp_path: Path) -> None:
     fastq.write_text("@read1\nATGC\n+\n!!!\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="ended before quality block was complete"):
-        list(FastaFileReader(fastq).read())
+        list(FastxReader(fastq).read())

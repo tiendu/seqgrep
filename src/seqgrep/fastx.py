@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal, TextIO
 
-from .models import FastaRecord
+from .models import SequenceRecord
 
 SequenceFormat = Literal["auto", "fasta", "fastq"]
 
@@ -13,7 +13,7 @@ _FASTA_SUFFIXES = {".fa", ".fasta", ".fna", ".ffn", ".frn"}
 _FASTQ_SUFFIXES = {".fq", ".fastq"}
 
 
-class FastaFileReader:
+class FastxReader:
     """Read FASTA or FASTQ records from plain text or gzip-compressed files.
 
     The class keeps the old name for compatibility. Internally, seqgrep only
@@ -25,7 +25,7 @@ class FastaFileReader:
         self.path = Path(path)
         self.fmt = fmt
 
-    def read(self) -> Iterable[FastaRecord]:
+    def read(self) -> Iterable[SequenceRecord]:
         fmt = infer_format(self.path, self.fmt)
         with open_text(self.path) as handle:
             if fmt == "fasta":
@@ -36,7 +36,7 @@ class FastaFileReader:
                 raise ValueError(f"Unsupported sequence format: {fmt}")
 
 
-SequenceFileReader = FastaFileReader
+SequenceFileReader = FastxReader
 
 
 def open_text(path: Path | str) -> TextIO:
@@ -73,7 +73,7 @@ def infer_format(path: Path | str, fmt: SequenceFormat = "auto") -> Literal["fas
     )
 
 
-def parse_fasta(handle: TextIO) -> Iterable[FastaRecord]:
+def parse_fasta(handle: TextIO) -> Iterable[SequenceRecord]:
     name: str | None = None
     chunks: list[str] = []
 
@@ -84,7 +84,7 @@ def parse_fasta(handle: TextIO) -> Iterable[FastaRecord]:
 
         if line.startswith(">"):
             if name is not None:
-                yield FastaRecord(name=name, sequence="".join(chunks))
+                yield SequenceRecord(name=name, sequence="".join(chunks))
             name = line[1:].split(maxsplit=1)[0]
             chunks = []
             continue
@@ -94,10 +94,10 @@ def parse_fasta(handle: TextIO) -> Iterable[FastaRecord]:
         chunks.append(line)
 
     if name is not None:
-        yield FastaRecord(name=name, sequence="".join(chunks))
+        yield SequenceRecord(name=name, sequence="".join(chunks))
 
 
-def parse_fastq(handle: TextIO) -> Iterable[FastaRecord]:
+def parse_fastq(handle: TextIO) -> Iterable[SequenceRecord]:
     """Parse FASTQ records, including multiline sequence and quality blocks."""
 
     line_number = 0
@@ -142,7 +142,7 @@ def parse_fastq(handle: TextIO) -> Iterable[FastaRecord]:
                 f"expected {len(sequence)}"
             )
 
-        yield FastaRecord(name=name, sequence=sequence)
+        yield SequenceRecord(name=name, sequence=sequence)
 
 
 def _next_nonempty_line(handle: TextIO) -> str | None:

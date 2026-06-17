@@ -5,7 +5,7 @@ import sys
 from collections.abc import Sequence
 
 from .cli import parse_args
-from .fasta import FastaFileReader
+from .fastx import FastxReader
 from .models import AmbigMode, Match, SearchQuery, SequenceType
 from .planner import SearchPlanner
 
@@ -27,7 +27,7 @@ def run(args: argparse.Namespace) -> int:
         ambig_mode=AmbigMode(args.ambig_mode),
     )
     plan = SearchPlanner().plan(query, args.jobs, args.chunk_size)
-    reader = FastaFileReader(args.input, fmt=args.format)
+    reader = FastxReader(args.input, fmt=args.format)
 
     if args.with_header:
         print("record\tstrand\tstart\tend\tmatched\tcircular")

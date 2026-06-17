@@ -22,7 +22,7 @@ class AmbigMode(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class FastaRecord:
+class SequenceRecord:
     name: str
     sequence: str
 
@@ -69,10 +69,10 @@ class Match:
 
 
 class SequenceReader(Protocol):
-    def read(self) -> Iterable[FastaRecord]:
+    def read(self) -> Iterable[SequenceRecord]:
         """Yield sequence records."""
 
 
 class SequenceMatcher(Protocol):
-    def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
+    def search(self, record: SequenceRecord, query: SearchQuery) -> Iterable[Match]:
         """Yield matches for a query in one sequence record."""

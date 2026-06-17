@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seqgrep"
-version = "0.4.2"
+version = "0.4.3"
 description = "Search nucleotide and amino-acid FASTA/FASTQ records with exact, configurable IUPAC, circular, reverse-complement, and multiprocessing modes."
 readme = "README.md"
 requires-python = ">=3.11"

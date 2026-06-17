@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 
 from .codecs import ExactSequenceCodec
-from .models import FastaRecord, Match, SearchQuery
+from .models import SequenceRecord, Match, SearchQuery
 
 
 class ExactMatcher:
@@ -12,7 +12,7 @@ class ExactMatcher:
     def __init__(self, codec: ExactSequenceCodec) -> None:
         self.codec = codec
 
-    def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
+    def search(self, record: SequenceRecord, query: SearchQuery) -> Iterable[Match]:
         sequence = record.sequence
         pattern = query.pattern
 

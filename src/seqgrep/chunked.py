@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from multiprocessing import get_context, shared_memory
 
 from .codecs import SequenceCodec, TargetEncoding, decode_target_symbol
-from .models import FastaRecord, Match, SearchQuery
+from .models import SequenceRecord, Match, SearchQuery
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +115,7 @@ class ChunkedProcessMatcher:
         self.workers = workers
         self.chunk_size = chunk_size
 
-    def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
+    def search(self, record: SequenceRecord, query: SearchQuery) -> Iterable[Match]:
         sequence = record.sequence
         normalized_pattern = query.pattern
 
