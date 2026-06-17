@@ -7,6 +7,8 @@ from .models import FastaRecord, Match, SearchQuery
 
 
 class WindowMatcher:
+    """Serial compatibility matcher for non-exact symbol semantics."""
+
     def __init__(self, codec: SequenceCodec) -> None:
         self.codec = codec
 
@@ -28,100 +30,91 @@ class WindowMatcher:
 
     def _search_one(
         self,
+        *,
         record: FastaRecord,
         pattern: str,
         strand: str,
         circular: bool,
     ) -> Iterable[Match]:
-        seq = self.codec.normalize(record.sequence)
+        sequence = self.codec.normalize(record.sequence)
         normalized_pattern = self.codec.normalize(pattern)
 
         if not normalized_pattern:
             raise ValueError("Pattern must not be empty")
-
-        if not seq:
+        if not sequence:
             return
 
         query_symbols = self.codec.encode_query(normalized_pattern)
-        target_symbols = self.codec.encode_target(seq)
+        target = self.codec.encode_target(sequence)
+        sequence_length = len(target)
+        pattern_length = len(query_symbols)
 
-        seq_len = len(target_symbols)
-        pattern_len = len(query_symbols)
-
-        if pattern_len > seq_len and not circular:
+        if pattern_length > sequence_length and not circular:
             return
 
-        max_starts = seq_len if circular else seq_len - pattern_len + 1
+        total_starts = sequence_length if circular else sequence_length - pattern_length + 1
 
-        for zero_start in range(max_starts):
+        for zero_start in range(total_starts):
             if not self._window_matches(
                 query_symbols=query_symbols,
-                target_symbols=target_symbols,
+                target=target,
                 start=zero_start,
                 circular=circular,
             ):
                 continue
 
-            zero_end = zero_start + pattern_len - 1
-            wraps = circular and zero_end >= seq_len
-
+            zero_end = zero_start + pattern_length - 1
             yield Match(
                 record=record.name,
                 strand=strand,
                 start=zero_start + 1,
-                end=(zero_end % seq_len) + 1 if circular else zero_end + 1,
+                end=(zero_end % sequence_length) + 1 if circular else zero_end + 1,
                 matched=self._matched_sequence(
-                    seq=seq,
+                    sequence=sequence,
                     start=zero_start,
-                    length=pattern_len,
+                    length=pattern_length,
                     circular=circular,
                 ),
-                circular=wraps,
+                circular=circular and zero_end >= sequence_length,
             )
 
     def _window_matches(
         self,
+        *,
         query_symbols: bytes,
-        target_symbols: EncodedTarget,
+        target: EncodedTarget,
         start: int,
         circular: bool,
     ) -> bool:
         compatible = self.codec.compatible
-        symbol_at = target_symbols.symbol_at
+        symbol_at = target.symbol_at
 
         if circular:
-            seq_len = len(target_symbols)
-
+            sequence_length = len(target)
             for offset, query_symbol in enumerate(query_symbols):
-                target_index = (start + offset) % seq_len
-
                 if not compatible(
                     query_symbol,
-                    symbol_at(target_index),
+                    symbol_at((start + offset) % sequence_length),
                 ):
                     return False
-
             return True
 
         for offset, query_symbol in enumerate(query_symbols):
-            if not compatible(
-                query_symbol,
-                symbol_at(start + offset),
-            ):
+            if not compatible(query_symbol, symbol_at(start + offset)):
                 return False
 
         return True
 
     @staticmethod
     def _matched_sequence(
-        seq: str,
+        *,
+        sequence: str,
         start: int,
         length: int,
         circular: bool,
     ) -> str:
         if not circular:
-            return seq[start : start + length]
+            return sequence[start : start + length]
 
-        seq_len = len(seq)
-
-        return "".join(seq[(start + offset) % seq_len] for offset in range(length))
+        sequence_length = len(sequence)
+        return "".join(sequence[(start + offset) % sequence_length] for offset in range(length))

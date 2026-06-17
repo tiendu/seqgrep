@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal, TextIO
 
-from .iupac import normalize_sequence
+from .alphabets import normalize_symbols
 from .models import FastaRecord
 
 SequenceFormat = Literal["auto", "fasta", "fastq"]
@@ -85,7 +85,7 @@ def parse_fasta(handle: TextIO) -> Iterable[FastaRecord]:
 
         if line.startswith(">"):
             if name is not None:
-                yield FastaRecord(name=name, sequence=normalize_sequence("".join(chunks)))
+                yield FastaRecord(name=name, sequence=normalize_symbols("".join(chunks)))
             name = line[1:].split(maxsplit=1)[0]
             chunks = []
             continue
@@ -95,7 +95,7 @@ def parse_fasta(handle: TextIO) -> Iterable[FastaRecord]:
         chunks.append(line)
 
     if name is not None:
-        yield FastaRecord(name=name, sequence=normalize_sequence("".join(chunks)))
+        yield FastaRecord(name=name, sequence=normalize_symbols("".join(chunks)))
 
 
 def parse_fastq(handle: TextIO) -> Iterable[FastaRecord]:
@@ -125,7 +125,7 @@ def parse_fastq(handle: TextIO) -> Iterable[FastaRecord]:
         else:
             raise ValueError(f"FASTQ record {name!r} is missing '+' quality header")
 
-        sequence = normalize_sequence("".join(seq_lines))
+        sequence = normalize_symbols("".join(seq_lines))
         if not sequence:
             raise ValueError(f"FASTQ record {name!r} has an empty sequence")
 

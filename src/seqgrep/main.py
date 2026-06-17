@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from collections.abc import Sequence
 
@@ -9,15 +8,6 @@ from .cli import parse_args
 from .fasta import FastaFileReader
 from .models import Match, SearchQuery, SequenceType
 from .planner import SearchPlanner
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-
-logger = logging.getLogger(__name__)
 
 
 def print_match(hit: Match) -> None:
@@ -35,21 +25,14 @@ def run(args: argparse.Namespace) -> int:
         ambig=args.ambig,
         sequence_type=SequenceType(args.sequence_type),
     )
-
-    plan = SearchPlanner().plan(
-        query=query,
-        jobs=args.jobs,
-        chunk_size=args.chunk_size,
-    )
-
-    matcher = plan.matcher
+    plan = SearchPlanner().plan(query, args.jobs, args.chunk_size)
     reader = FastaFileReader(args.input, fmt=args.format)
 
     if args.with_header:
         print("record\tstrand\tstart\tend\tmatched\tcircular")
 
     for record in reader.read():
-        for hit in matcher.search(record, query):
+        for hit in plan.matcher.search(record, query):
             print_match(hit)
 
     return 0
@@ -60,8 +43,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return run(args)
-    except Exception:
-        logger.exception("seqgrep failed")
+    except (OSError, ValueError) as exc:
+        print(f"seqgrep: {exc}", file=sys.stderr)
         return 1
 
 

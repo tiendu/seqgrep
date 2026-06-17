@@ -5,35 +5,37 @@ from pathlib import Path
 
 import pytest
 
+from seqgrep.alphabets import (
+    NUCLEOTIDE_EXACT_CODES,
+    NUCLEOTIDE_IUPAC_MASKS,
+    PROTEIN_5BIT_CODES,
+    PROTEIN_SYMBOLS,
+    encode_nucleotide_exact,
+    encode_nucleotide_iupac,
+    encode_protein_exact,
+    nucleotide_exact_text,
+    pack_nucleotide_2bit,
+    pack_protein_5bit,
+    protein_exact_text,
+    reverse_complement_nucleotide,
+    unpack_nucleotide_2bit,
+    unpack_protein_5bit,
+)
+from seqgrep.chunked import ChunkedProcessMatcher
 from seqgrep.cli import parse_args
 from seqgrep.codecs import (
     ByteTarget,
-    IupacDnaCodec,
     IupacNucleotideCodec,
-    LiteralCodec,
     NucleotideCodec,
-    PackedCanonicalCodeTarget,
-    PackedCanonicalMaskTarget,
-    PackedProteinTarget,
+    PackedTarget,
     ProteinCodec,
     TargetEncoding,
 )
+from seqgrep.exact import ExactMatcher
 from seqgrep.fasta import FastaFileReader
-from seqgrep.iupac import (
-    encode_canonical_2bit,
-    encode_iupac_query,
-    encode_nucleotide_query,
-    reverse_complement,
-)
 from seqgrep.models import FastaRecord, Match, SearchQuery, SequenceType
 from seqgrep.planner import SearchPlanner
-from seqgrep.protein import (
-    PROTEIN_CODES,
-    PROTEIN_SYMBOLS,
-    encode_protein_5bit,
-    encode_protein_query,
-    get_protein_5bit,
-)
+from seqgrep.window import WindowMatcher
 
 
 def search_with_planner(
@@ -43,11 +45,7 @@ def search_with_planner(
     jobs: int = 1,
     chunk_size: int = 1_000_000,
 ) -> list[Match]:
-    plan = SearchPlanner().plan(
-        query=query,
-        jobs=jobs,
-        chunk_size=chunk_size,
-    )
+    plan = SearchPlanner().plan(query, jobs, chunk_size)
     return list(plan.matcher.search(record, query))
 
 
@@ -56,206 +54,155 @@ def hit_values(hits: list[Match]) -> list[tuple[int, int, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Nucleotide encodings
+# Unified alphabet module
 # ---------------------------------------------------------------------------
 
 
-def test_exact_nucleotide_query_codes() -> None:
-    assert encode_nucleotide_query("ACGTURYN") == bytes([0, 1, 2, 3, 3, 4, 5, 14])
+def test_exact_nucleotide_codes() -> None:
+    expected = bytes(NUCLEOTIDE_EXACT_CODES[symbol] for symbol in "ACGTURYN-.")
+    assert encode_nucleotide_exact("ACGTURYN-.") == expected
 
 
-def test_iupac_query_bitmasks() -> None:
-    assert encode_iupac_query("ACGT") == bytes([0b0001, 0b0010, 0b0100, 0b1000])
-    assert encode_iupac_query("RYN") == bytes([0b0101, 0b1010, 0b1111])
+def test_iupac_nucleotide_masks() -> None:
+    expected = bytes(NUCLEOTIDE_IUPAC_MASKS[symbol] for symbol in "ACGTRYN-.")
+    assert encode_nucleotide_iupac("ACGTRYN-.") == expected
 
 
 def test_nucleotide_encoders_normalize_case_and_whitespace() -> None:
-    assert encode_nucleotide_query("a c\ng\tt") == bytes([0, 1, 2, 3])
-    assert encode_iupac_query("a c\ng\tt") == bytes([0b0001, 0b0010, 0b0100, 0b1000])
+    assert encode_nucleotide_exact("a c\ng\tt") == bytes([0, 1, 2, 3])
+    assert encode_nucleotide_iupac("a c\ng\tt") == bytes([1, 2, 4, 8])
 
 
 def test_nucleotide_encoders_reject_invalid_symbol() -> None:
-    with pytest.raises(ValueError, match="Unsupported nucleotide 'X' at position 3"):
-        encode_nucleotide_query("ATX")
+    with pytest.raises(ValueError, match="Unsupported nucleotide symbol 'X' at position 3"):
+        encode_nucleotide_exact("ATX")
 
     with pytest.raises(
         ValueError,
-        match="Unsupported IUPAC nucleotide 'X' at position 3",
+        match="Unsupported IUPAC nucleotide symbol 'X' at position 3",
     ):
-        encode_iupac_query("ATX")
+        encode_nucleotide_iupac("ATX")
 
 
-def test_reverse_complement_ambiguous() -> None:
-    assert reverse_complement("ARYN") == "NRYT"
+def test_nucleotide_exact_text_treats_u_as_t() -> None:
+    assert nucleotide_exact_text("AUG") == "ATG"
 
 
-def test_encode_canonical_2bit() -> None:
-    packed, length = encode_canonical_2bit("ACGT")
-
-    assert length == 4
-    assert packed == bytes([0b00011011])
+def test_reverse_complement_supports_ambiguity_and_gaps() -> None:
+    assert reverse_complement_nucleotide("ARYN-.") == ".-NRYT"
 
 
-def test_encode_canonical_2bit_partial_final_byte() -> None:
-    packed, length = encode_canonical_2bit("ACGTA")
-
-    assert length == 5
-    assert packed == bytes([0b00011011, 0b00000000])
-
-
-def test_encode_canonical_2bit_treats_u_as_t() -> None:
-    assert encode_canonical_2bit("T") == encode_canonical_2bit("U")
-
-
-def test_encode_canonical_2bit_rejects_ambiguity() -> None:
-    with pytest.raises(
-        ValueError,
-        match="2-bit encoding only supports A, C, G, T, or U",
-    ):
-        encode_canonical_2bit("ATGN")
-
-
-# ---------------------------------------------------------------------------
-# Protein encodings
-# ---------------------------------------------------------------------------
-
-
-def test_protein_alphabet_fits_in_five_bits() -> None:
-    assert len(PROTEIN_CODES) == len(PROTEIN_SYMBOLS)
-    assert len(PROTEIN_CODES) <= 32
-    assert max(PROTEIN_CODES.values()) <= 0b11111
-
-
-def test_protein_query_uses_one_code_per_symbol() -> None:
-    query = "MTEYKLVVVG"
-    encoded = encode_protein_query(query)
-
-    assert len(encoded) == len(query)
-    assert encoded == bytes(PROTEIN_CODES[symbol] for symbol in query)
-
-
-def test_protein_5bit_round_trip_for_full_alphabet() -> None:
-    sequence = "".join(PROTEIN_SYMBOLS)
-    packed, length = encode_protein_5bit(sequence)
+def test_nucleotide_2bit_round_trip() -> None:
+    sequence = "ACGTUACGT"
+    packed, length = pack_nucleotide_2bit(sequence)
 
     assert length == len(sequence)
-    assert len(packed) == (length * 5 + 7) // 8
-    assert [get_protein_5bit(packed, index, length) for index in range(length)] == [
-        PROTEIN_CODES[symbol] for symbol in sequence
+    assert len(packed) == (length + 3) // 4
+    assert [unpack_nucleotide_2bit(packed, index, length) for index in range(length)] == [
+        NUCLEOTIDE_EXACT_CODES[symbol] for symbol in sequence
     ]
 
 
-def test_protein_5bit_round_trip_across_byte_boundaries() -> None:
+def test_nucleotide_2bit_rejects_noncanonical_symbols() -> None:
+    with pytest.raises(
+        ValueError,
+        match="2-bit nucleotide encoding only supports A, C, G, T, or U",
+    ):
+        pack_nucleotide_2bit("ATGN")
+
+
+def test_protein_alphabet_fits_five_bits() -> None:
+    assert len(PROTEIN_5BIT_CODES) == len(PROTEIN_SYMBOLS)
+    assert len(PROTEIN_5BIT_CODES) <= 32
+    assert max(PROTEIN_5BIT_CODES.values()) <= 0b11111
+
+
+def test_protein_query_codes() -> None:
+    sequence = "MTEYKLVVVG"
+    assert encode_protein_exact(sequence) == bytes(
+        PROTEIN_5BIT_CODES[symbol] for symbol in sequence
+    )
+
+
+def test_protein_5bit_round_trip_full_alphabet() -> None:
+    sequence = "".join(PROTEIN_SYMBOLS)
+    packed, length = pack_protein_5bit(sequence)
+
+    assert len(packed) == (length * 5 + 7) // 8
+    assert [unpack_protein_5bit(packed, index, length) for index in range(length)] == [
+        PROTEIN_5BIT_CODES[symbol] for symbol in sequence
+    ]
+
+
+def test_protein_5bit_round_trip_all_boundaries() -> None:
     for length in range(1, 65):
         sequence = "".join(PROTEIN_SYMBOLS[index % len(PROTEIN_SYMBOLS)] for index in range(length))
-        packed, encoded_length = encode_protein_5bit(sequence)
-
-        assert encoded_length == length
+        packed, encoded_length = pack_protein_5bit(sequence)
         assert [
-            get_protein_5bit(packed, index, encoded_length) for index in range(encoded_length)
-        ] == [PROTEIN_CODES[symbol] for symbol in sequence]
+            unpack_protein_5bit(packed, index, encoded_length) for index in range(encoded_length)
+        ] == [PROTEIN_5BIT_CODES[symbol] for symbol in sequence]
 
 
-def test_protein_encoding_normalizes_case_and_whitespace() -> None:
-    assert encode_protein_query("m t\ne\tyk") == encode_protein_query("MTEYK")
+def test_protein_validation() -> None:
+    assert protein_exact_text("m t\ne\tyk") == "MTEYK"
 
-
-def test_protein_encoding_rejects_invalid_symbol() -> None:
     with pytest.raises(
         ValueError,
         match="Unsupported amino-acid symbol '@' at position 3",
     ):
-        encode_protein_5bit("MT@K")
+        pack_protein_5bit("MT@K")
 
 
 # ---------------------------------------------------------------------------
-# Codecs and target representations
+# Codecs and storage
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_literal_codec_remains_available() -> None:
-    codec = LiteralCodec()
-    target = codec.encode_target("ARNX")
+def test_exact_nucleotide_codec_packs_canonical_target() -> None:
+    target = NucleotideCodec().encode_target("ACGTU")
 
-    assert isinstance(target, ByteTarget)
-    assert target.data == b"ARNX"
-    assert codec.compatible(ord("A"), ord("A")) is True
-    assert codec.compatible(ord("A"), ord("N")) is False
-
-
-def test_default_nucleotide_codec_packs_canonical_target() -> None:
-    codec = NucleotideCodec()
-    target = codec.encode_target("ACGTU")
-
-    assert isinstance(target, PackedCanonicalCodeTarget)
-    assert target.encoding == TargetEncoding.PACKED_NUCLEOTIDE_2BIT
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_2BIT_CODE
     assert len(target) == 5
     assert len(target.data) == 2
-    assert [target.symbol_at(index) for index in range(len(target))] == [
-        0,
-        1,
-        2,
-        3,
-        3,
-    ]
+    assert [target.symbol_at(index) for index in range(len(target))] == [0, 1, 2, 3, 3]
 
 
-def test_default_nucleotide_codec_falls_back_for_iupac_target() -> None:
-    codec = NucleotideCodec()
-    target = codec.encode_target("ANRY")
+def test_exact_nucleotide_codec_falls_back_for_iupac_target() -> None:
+    target = NucleotideCodec().encode_target("ANRY-.")
 
     assert isinstance(target, ByteTarget)
     assert [target.symbol_at(index) for index in range(len(target))] == [
-        0,
-        14,
-        4,
-        5,
+        NUCLEOTIDE_EXACT_CODES[symbol] for symbol in "ANRY-."
     ]
 
 
 def test_iupac_codec_packs_canonical_target_as_masks() -> None:
-    codec = IupacNucleotideCodec()
-    target = codec.encode_target("ACGTU")
+    target = IupacNucleotideCodec().encode_target("ACGTU")
 
-    assert isinstance(target, PackedCanonicalMaskTarget)
-    assert target.encoding == TargetEncoding.PACKED_CANONICAL_2BIT
-    assert [target.symbol_at(index) for index in range(len(target))] == [
-        0b0001,
-        0b0010,
-        0b0100,
-        0b1000,
-        0b1000,
-    ]
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_2BIT_MASK
+    assert [target.symbol_at(index) for index in range(len(target))] == [1, 2, 4, 8, 8]
 
 
 def test_iupac_codec_falls_back_for_ambiguous_target() -> None:
-    codec = IupacNucleotideCodec()
-    target = codec.encode_target("ANRY")
+    target = IupacNucleotideCodec().encode_target("ANRY-.")
 
     assert isinstance(target, ByteTarget)
     assert [target.symbol_at(index) for index in range(len(target))] == [
-        0b0001,
-        0b1111,
-        0b0101,
-        0b1010,
+        NUCLEOTIDE_IUPAC_MASKS[symbol] for symbol in "ANRY-."
     ]
 
 
-def test_old_iupac_codec_name_is_preserved() -> None:
-    assert IupacDnaCodec is IupacNucleotideCodec
-
-
-def test_protein_codec_always_uses_packed_5bit_target() -> None:
-    codec = ProteinCodec()
+def test_protein_codec_uses_packed_5bit_target() -> None:
     sequence = "MTEYKLVVVGAGGVGKSAL"
-    target = codec.encode_target(sequence)
+    target = ProteinCodec().encode_target(sequence)
 
-    assert isinstance(target, PackedProteinTarget)
-    assert target.encoding == TargetEncoding.PACKED_PROTEIN_5BIT
-    assert len(target) == len(sequence)
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.PROTEIN_5BIT
     assert len(target.data) == (len(sequence) * 5 + 7) // 8
     assert [target.symbol_at(index) for index in range(len(target))] == [
-        PROTEIN_CODES[symbol] for symbol in sequence
+        PROTEIN_5BIT_CODES[symbol] for symbol in sequence
     ]
 
 
@@ -265,141 +212,157 @@ def test_packed_targets_reject_padding_indexes() -> None:
 
     with pytest.raises(IndexError):
         nucleotide_target.symbol_at(3)
-
     with pytest.raises(IndexError):
         protein_target.symbol_at(3)
 
 
 # ---------------------------------------------------------------------------
-# Planner and serial behavior
+# Planner and exact serial backend
 # ---------------------------------------------------------------------------
 
 
-def test_default_mode_is_exact_nucleotide() -> None:
-    record = FastaRecord("seq1", "ATGNATGA")
-    query = SearchQuery("ATGN")
+def test_planner_uses_native_exact_matcher_for_serial_exact_modes() -> None:
+    nucleotide = SearchPlanner().plan(SearchQuery("ATG"), jobs=1, chunk_size=100)
+    protein = SearchPlanner().plan(
+        SearchQuery("MTE", sequence_type=SequenceType.AMINO_ACID),
+        jobs=1,
+        chunk_size=100,
+    )
 
-    assert hit_values(search_with_planner(record, query)) == [
-        (1, 4, "ATGN"),
-    ]
+    assert isinstance(nucleotide.matcher, ExactMatcher)
+    assert isinstance(protein.matcher, ExactMatcher)
+
+
+def test_planner_uses_window_matcher_for_serial_iupac() -> None:
+    plan = SearchPlanner().plan(SearchQuery("ATN", ambig=True), jobs=1, chunk_size=100)
+    assert isinstance(plan.matcher, WindowMatcher)
+
+
+def test_planner_uses_chunked_matcher_when_jobs_exceed_one() -> None:
+    plan = SearchPlanner().plan(SearchQuery("ATG"), jobs=2, chunk_size=100)
+    assert isinstance(plan.matcher, ChunkedProcessMatcher)
+
+
+def test_default_mode_is_exact_nucleotide() -> None:
+    hits = search_with_planner(FastaRecord("seq1", "ATGNATGA"), SearchQuery("ATGN"))
+    assert hit_values(hits) == [(1, 4, "ATGN")]
+
+
+def test_exact_matcher_finds_overlapping_hits() -> None:
+    hits = search_with_planner(FastaRecord("seq1", "AAAA"), SearchQuery("AA"))
+    assert hit_values(hits) == [(1, 2, "AA"), (2, 3, "AA"), (3, 4, "AA")]
 
 
 def test_default_nucleotide_mode_treats_u_as_t() -> None:
-    record = FastaRecord("rna", "AUGATG")
-    query = SearchQuery("ATG")
+    hits = search_with_planner(FastaRecord("rna", "AUGATG"), SearchQuery("ATG"))
+    assert hit_values(hits) == [(1, 3, "AUG"), (4, 6, "ATG")]
 
-    assert hit_values(search_with_planner(record, query)) == [
-        (1, 3, "AUG"),
-        (4, 6, "ATG"),
+
+def test_exact_nucleotide_gaps_are_literal() -> None:
+    record = FastaRecord("aligned", "A-C.A.C")
+
+    assert hit_values(search_with_planner(record, SearchQuery("A-C"))) == [(1, 3, "A-C")]
+    assert hit_values(search_with_planner(record, SearchQuery("A.C"))) == [
+        (5, 7, "A.C"),
     ]
 
 
-def test_iupac_ambig_treats_n_as_any_base() -> None:
-    record = FastaRecord("seq1", "ATGNATGA")
-    query = SearchQuery("ATGN", ambig=True)
+def test_iupac_gaps_are_equivalent() -> None:
+    record = FastaRecord("aligned", "A-C A.C")
+    query = SearchQuery("A-C", ambig=True)
 
     assert hit_values(search_with_planner(record, query)) == [
-        (1, 4, "ATGN"),
-        (5, 8, "ATGA"),
+        (1, 3, "A-C"),
+        (4, 6, "A.C"),
     ]
+
+
+def test_iupac_n_matches_any_canonical_base() -> None:
+    hits = search_with_planner(
+        FastaRecord("seq1", "ATGNATGA"),
+        SearchQuery("ATGN", ambig=True),
+    )
+    assert hit_values(hits) == [(1, 4, "ATGN"), (5, 8, "ATGA")]
 
 
 def test_protein_mode_matches_exact_amino_acids() -> None:
-    record = FastaRecord("ras", "XXMTEYKLVVVGAGGVGKSALXX")
-    query = SearchQuery(
-        "MTEYK",
-        sequence_type=SequenceType.AMINO_ACID,
+    hits = search_with_planner(
+        FastaRecord("ras", "XXMTEYKLVVVGAGGVGKSALXX"),
+        SearchQuery("MTEYK", sequence_type=SequenceType.AMINO_ACID),
     )
-
-    assert hit_values(search_with_planner(record, query)) == [
-        (3, 7, "MTEYK"),
-    ]
+    assert hit_values(hits) == [(3, 7, "MTEYK")]
 
 
-def test_protein_x_is_literal_not_wildcard() -> None:
-    record = FastaRecord("protein", "MAXMAB")
-    query = SearchQuery(
-        "MAX",
-        sequence_type=SequenceType.AMINO_ACID,
+def test_protein_extended_symbols_are_literal() -> None:
+    hits = search_with_planner(
+        FastaRecord("protein", "MAXMAB"),
+        SearchQuery("MAX", sequence_type=SequenceType.AMINO_ACID),
     )
-
-    assert hit_values(search_with_planner(record, query)) == [
-        (1, 3, "MAX"),
-    ]
+    assert hit_values(hits) == [(1, 3, "MAX")]
 
 
-def test_protein_mode_rejects_ambig() -> None:
-    query = SearchQuery(
-        "MTEYK",
-        ambig=True,
-        sequence_type=SequenceType.AMINO_ACID,
+def test_protein_mode_rejects_ambig_and_revcomp() -> None:
+    with pytest.raises(ValueError, match="--ambig is only valid"):
+        SearchPlanner().plan(
+            SearchQuery("MTE", ambig=True, sequence_type=SequenceType.AMINO_ACID),
+            jobs=1,
+            chunk_size=100,
+        )
+
+    with pytest.raises(ValueError, match="--revcomp is only valid"):
+        SearchPlanner().plan(
+            SearchQuery("MTE", revcomp=True, sequence_type=SequenceType.AMINO_ACID),
+            jobs=1,
+            chunk_size=100,
+        )
+
+
+def test_reverse_complement_match() -> None:
+    hits = search_with_planner(
+        FastaRecord("seq1", "CCCATGAAGTCCC"),
+        SearchQuery("ACTTCAT", revcomp=True),
     )
-
-    with pytest.raises(
-        ValueError,
-        match="--ambig is only valid for nucleotide sequences",
-    ):
-        SearchPlanner().plan(query, jobs=1, chunk_size=100)
-
-
-def test_protein_mode_rejects_reverse_complement() -> None:
-    query = SearchQuery(
-        "MTEYK",
-        revcomp=True,
-        sequence_type=SequenceType.AMINO_ACID,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="--revcomp is only valid for nucleotide sequences",
-    ):
-        SearchPlanner().plan(query, jobs=1, chunk_size=100)
-
-
-def test_nucleotide_reverse_complement_match() -> None:
-    record = FastaRecord("seq1", "CCCATGAAGTCCC")
-    query = SearchQuery("ACTTCAT", revcomp=True)
-
-    hits = search_with_planner(record, query)
-
     assert any(
         hit.strand == "-" and hit.start == 4 and hit.end == 10 and hit.matched == "ATGAAGT"
         for hit in hits
     )
 
 
-def test_circular_nucleotide_match() -> None:
-    record = FastaRecord("plasmid", "CCCAAATTT")
-    query = SearchQuery("TTTCCC", circular=True)
-
-    hits = search_with_planner(record, query)
-
-    assert len(hits) == 1
-    assert hits[0] == Match(
-        record="plasmid",
-        strand="+",
-        start=7,
-        end=3,
-        matched="TTTCCC",
-        circular=True,
+def test_circular_exact_match() -> None:
+    hits = search_with_planner(
+        FastaRecord("plasmid", "CCCAAATTT"),
+        SearchQuery("TTTCCC", circular=True),
     )
-
-
-def test_circular_protein_match() -> None:
-    record = FastaRecord("ring", "CDEMA")
-    query = SearchQuery(
-        "MAC",
-        circular=True,
-        sequence_type=SequenceType.AMINO_ACID,
-    )
-
-    assert hit_values(search_with_planner(record, query)) == [
-        (4, 1, "MAC"),
+    assert hits == [
+        Match(
+            record="plasmid",
+            strand="+",
+            start=7,
+            end=3,
+            matched="TTTCCC",
+            circular=True,
+        )
     ]
 
 
+def test_circular_pattern_longer_than_sequence() -> None:
+    hits = search_with_planner(
+        FastaRecord("tiny", "ATG"),
+        SearchQuery("ATGAT", circular=True),
+    )
+    assert hit_values(hits) == [(1, 2, "ATGAT")]
+
+
+def test_circular_protein_match() -> None:
+    hits = search_with_planner(
+        FastaRecord("ring", "CDEMA"),
+        SearchQuery("MAC", circular=True, sequence_type=SequenceType.AMINO_ACID),
+    )
+    assert hit_values(hits) == [(4, 1, "MAC")]
+
+
 # ---------------------------------------------------------------------------
-# Chunked matcher parity for every target encoding
+# Chunked parity across all storage representations
 # ---------------------------------------------------------------------------
 
 
@@ -410,13 +373,7 @@ def assert_chunked_matches_serial(
     chunk_size: int,
 ) -> list[Match]:
     serial_hits = search_with_planner(record, query, jobs=1)
-    chunked_hits = search_with_planner(
-        record,
-        query,
-        jobs=2,
-        chunk_size=chunk_size,
-    )
-
+    chunked_hits = search_with_planner(record, query, jobs=2, chunk_size=chunk_size)
     assert chunked_hits == serial_hits
     return chunked_hits
 
@@ -427,7 +384,6 @@ def test_chunked_exact_nucleotide_packed_target() -> None:
         SearchQuery("TGCA"),
         chunk_size=6,
     )
-
     assert hit_values(hits) == [(6, 9, "TGCA")]
 
 
@@ -447,127 +403,88 @@ def test_chunked_iupac_packed_target() -> None:
     )
 
 
-def test_chunked_iupac_byte_fallback() -> None:
+def test_chunked_iupac_byte_fallback_and_gaps() -> None:
     assert_chunked_matches_serial(
-        FastaRecord("seq1", "ATGNATGA"),
-        SearchQuery("ATGN", ambig=True),
-        chunk_size=3,
-    )
-
-
-def test_chunked_protein_5bit_target_across_boundary() -> None:
-    hits = assert_chunked_matches_serial(
-        FastaRecord("protein", "AAAAAMTEYKAAAAA"),
-        SearchQuery(
-            "MTEYK",
-            sequence_type=SequenceType.AMINO_ACID,
-        ),
-        chunk_size=6,
-    )
-
-    assert hit_values(hits) == [(6, 10, "MTEYK")]
-
-
-def test_chunked_protein_circular_target() -> None:
-    assert_chunked_matches_serial(
-        FastaRecord("ring", "CDEMA"),
-        SearchQuery(
-            "MAC",
-            circular=True,
-            sequence_type=SequenceType.AMINO_ACID,
-        ),
+        FastaRecord("seq1", "A-CATGNA.C"),
+        SearchQuery("A.C", ambig=True),
         chunk_size=2,
     )
 
 
-def test_chunked_iupac_revcomp_circular_match() -> None:
+def test_chunked_protein_5bit_target() -> None:
+    hits = assert_chunked_matches_serial(
+        FastaRecord("protein", "AAAAAMTEYKAAAAA"),
+        SearchQuery("MTEYK", sequence_type=SequenceType.AMINO_ACID),
+        chunk_size=6,
+    )
+    assert hit_values(hits) == [(6, 10, "MTEYK")]
+
+
+def test_chunked_circular_and_reverse_complement() -> None:
     assert_chunked_matches_serial(
         FastaRecord("plasmid", "CCCAAATTT"),
-        SearchQuery(
-            "GGGAAA",
-            revcomp=True,
-            circular=True,
-            ambig=True,
-        ),
+        SearchQuery("GGGAAA", revcomp=True, circular=True, ambig=True),
         chunk_size=4,
     )
 
 
+def test_chunked_longer_circular_pattern() -> None:
+    assert_chunked_matches_serial(
+        FastaRecord("tiny", "ATG"),
+        SearchQuery("ATGAT", circular=True),
+        chunk_size=2,
+    )
+
+
 # ---------------------------------------------------------------------------
-# CLI validation
+# CLI and readers
 # ---------------------------------------------------------------------------
 
 
 def test_cli_defaults_to_nucleotide(tmp_path: Path) -> None:
-    input_path = tmp_path / "seq.fa"
-    args = parse_args(["ATG", str(input_path)])
-
+    args = parse_args(["ATG", str(tmp_path / "seq.fa")])
     assert args.sequence_type == SequenceType.NUCLEOTIDE.value
     assert args.ambig is False
 
 
 def test_cli_accepts_amino_acid_mode(tmp_path: Path) -> None:
-    input_path = tmp_path / "protein.fa"
-    args = parse_args(["MTEYK", str(input_path), "--sequence-type", "amino-acid"])
-
+    args = parse_args(["MTEYK", str(tmp_path / "protein.fa"), "--sequence-type", "amino-acid"])
     assert args.sequence_type == SequenceType.AMINO_ACID.value
 
 
-def test_cli_rejects_ambig_for_amino_acid(tmp_path: Path) -> None:
-    input_path = tmp_path / "protein.fa"
+def test_cli_rejects_invalid_amino_acid_options(tmp_path: Path) -> None:
+    path = str(tmp_path / "protein.fa")
 
-    with pytest.raises(SystemExit) as exc_info:
-        parse_args(
-            [
-                "MTEYK",
-                str(input_path),
-                "--sequence-type",
-                "amino-acid",
-                "--ambig",
-            ]
-        )
-
-    assert exc_info.value.code == 2
+    with pytest.raises(SystemExit):
+        parse_args(["MTE", path, "-t", "amino-acid", "--ambig"])
+    with pytest.raises(SystemExit):
+        parse_args(["MTE", path, "-t", "amino-acid", "--revcomp"])
 
 
-def test_cli_rejects_revcomp_for_amino_acid(tmp_path: Path) -> None:
-    input_path = tmp_path / "protein.fa"
+def test_cli_rejects_invalid_worker_values(tmp_path: Path) -> None:
+    path = str(tmp_path / "seq.fa")
 
-    with pytest.raises(SystemExit) as exc_info:
-        parse_args(
-            [
-                "MTEYK",
-                str(input_path),
-                "--sequence-type",
-                "amino-acid",
-                "--revcomp",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-
-
-# ---------------------------------------------------------------------------
-# FASTA / FASTQ input
-# ---------------------------------------------------------------------------
+    with pytest.raises(SystemExit):
+        parse_args(["ATG", path, "--jobs", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["ATG", path, "--chunk-size", "0"])
 
 
 def test_read_fasta_plain_and_gzip(tmp_path: Path) -> None:
     fasta = tmp_path / "example.fa"
-    fasta.write_text(">seq1\nATG\nCCC\n", encoding="utf-8")
+    fasta.write_text(">seq1 description\nATG\nCCC\n", encoding="utf-8")
 
     gz = tmp_path / "example.fa.gz"
     with gzip.open(gz, "wt", encoding="utf-8") as handle:
-        handle.write(">seq1\nATG\nCCC\n")
+        handle.write(">seq1 description\nATG\nCCC\n")
 
     expected = [FastaRecord("seq1", "ATGCCC")]
-
     assert list(FastaFileReader(fasta).read()) == expected
     assert list(FastaFileReader(gz).read()) == expected
 
 
-def test_read_fastq_plain_and_gzip(tmp_path: Path) -> None:
-    fastq_text = "@read1\nATGC\n+\n!!!!\n"
+def test_read_multiline_fastq_plain_and_gzip(tmp_path: Path) -> None:
+    fastq_text = "@read1 description\nAT\nGC\n+\n!!\n!!\n"
 
     fastq = tmp_path / "reads.fastq"
     fastq.write_text(fastq_text, encoding="utf-8")
@@ -577,6 +494,13 @@ def test_read_fastq_plain_and_gzip(tmp_path: Path) -> None:
         handle.write(fastq_text)
 
     expected = [FastaRecord("read1", "ATGC")]
-
     assert list(FastaFileReader(fastq).read()) == expected
     assert list(FastaFileReader(gz).read()) == expected
+
+
+def test_fastq_rejects_quality_length_mismatch(tmp_path: Path) -> None:
+    fastq = tmp_path / "bad.fastq"
+    fastq.write_text("@read1\nATGC\n+\n!!!\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ended before quality block was complete"):
+        list(FastaFileReader(fastq).read())

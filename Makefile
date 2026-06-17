@@ -3,7 +3,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 SEQGREP := $(VENV)/bin/seqgrep
 
-.PHONY: install test lint typecheck check clean run help
+.PHONY: install test lint format format-check typecheck check clean run help
 
 $(PYTHON):
 	python3 -m venv $(VENV)
@@ -21,10 +21,16 @@ test:
 lint:
 	$(PYTHON) -m ruff check .
 
+format:
+	$(PYTHON) -m ruff format .
+
+format-check:
+	$(PYTHON) -m ruff format --check .
+
 typecheck:
 	$(PYTHON) -m mypy src
 
-check: test lint typecheck
+check: test lint format-check typecheck
 
 clean:
 	rm -rf $(VENV)
@@ -34,10 +40,12 @@ clean:
 
 help:
 	@echo "Available targets:"
-	@echo "  make install     Create venv and install package with dev dependencies"
-	@echo "  make run         Run seqgrep CLI"
-	@echo "  make test        Run pytest"
-	@echo "  make lint        Run ruff"
-	@echo "  make typecheck   Run mypy"
-	@echo "  make check       Run test, lint, and typecheck"
-	@echo "  make clean       Remove venv and build/cache files"
+	@echo "  make install       Create venv and install development dependencies"
+	@echo "  make run           Run the seqgrep CLI"
+	@echo "  make test          Run pytest"
+	@echo "  make lint          Run Ruff linting"
+	@echo "  make format        Format source and tests"
+	@echo "  make format-check  Check formatting"
+	@echo "  make typecheck     Run strict mypy"
+	@echo "  make check         Run all checks"
+	@echo "  make clean         Remove environments, builds, and caches"

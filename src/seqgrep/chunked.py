@@ -32,29 +32,15 @@ class _RawHit:
 
 
 def _chunk_ranges(total_starts: int, chunk_size: int) -> Iterator[tuple[int, int]]:
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero")
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
 
     for start in range(0, total_starts, chunk_size):
         yield start, min(start + chunk_size, total_starts)
 
 
-def _target_symbol(
-    storage: memoryview,
-    index: int,
-    sequence_length: int,
-    encoding: TargetEncoding,
-) -> int:
-    """Read one logical target symbol from shared-memory storage."""
-    return decode_target_symbol(
-        storage=storage,
-        index=index,
-        length=sequence_length,
-        encoding=encoding,
-    )
-
-
 def _window_matches(
+    *,
     storage: memoryview,
     sequence_length: int,
     target_encoding: TargetEncoding,
@@ -67,28 +53,23 @@ def _window_matches(
 
     if circular:
         for offset, query_symbol in enumerate(query_symbols):
-            target_index = (zero_start + offset) % sequence_length
-            target_symbol = _target_symbol(
-                storage=storage,
-                index=target_index,
-                sequence_length=sequence_length,
-                encoding=target_encoding,
+            target_symbol = decode_target_symbol(
+                storage,
+                (zero_start + offset) % sequence_length,
+                sequence_length,
+                target_encoding,
             )
-
             if not compatible(query_symbol, target_symbol):
                 return False
-
         return True
 
     for offset, query_symbol in enumerate(query_symbols):
-        target_index = zero_start + offset
-        target_symbol = _target_symbol(
-            storage=storage,
-            index=target_index,
-            sequence_length=sequence_length,
-            encoding=target_encoding,
+        target_symbol = decode_target_symbol(
+            storage,
+            zero_start + offset,
+            sequence_length,
+            target_encoding,
         )
-
         if not compatible(query_symbol, target_symbol):
             return False
 
@@ -97,14 +78,13 @@ def _window_matches(
 
 def _search_chunk(job: _ChunkJob) -> list[_RawHit]:
     shm = shared_memory.SharedMemory(name=job.shm_name)
-    buf = shm.buf
-    assert buf is not None
-
-    storage = buf[: job.stored_size]
+    buffer = shm.buf
+    assert buffer is not None
+    storage = buffer[: job.stored_size]
 
     try:
         hits: list[_RawHit] = []
-        query_len = len(job.query_symbols)
+        query_length = len(job.query_symbols)
 
         for zero_start in range(job.start_begin, job.start_end):
             if not _window_matches(
@@ -118,7 +98,7 @@ def _search_chunk(job: _ChunkJob) -> list[_RawHit]:
             ):
                 continue
 
-            zero_end = zero_start + query_len - 1
+            zero_end = zero_start + query_length - 1
             hits.append(
                 _RawHit(
                     strand=job.strand,
@@ -131,25 +111,20 @@ def _search_chunk(job: _ChunkJob) -> list[_RawHit]:
         return hits
     finally:
         storage.release()
-        buf.release()
+        buffer.release()
         shm.close()
 
 
 class ChunkedProcessMatcher:
-    """Search one long sequence by splitting candidate start positions.
-
-    Workers share the physical target storage while candidate ranges are based
-    on the target's logical sequence length. This distinction is essential for
-    packed targets, where logical symbols and physical bytes differ.
-    """
+    """Search one long record using packed shared memory and worker processes."""
 
     def __init__(
         self,
         codec: SequenceCodec,
-        workers: int | None = None,
+        workers: int,
         chunk_size: int = 1_000_000,
     ) -> None:
-        if workers is not None and workers < 1:
+        if workers < 1:
             raise ValueError("workers must be at least 1")
         if chunk_size < 1:
             raise ValueError("chunk_size must be at least 1")
@@ -159,34 +134,33 @@ class ChunkedProcessMatcher:
         self.chunk_size = chunk_size
 
     def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
-        seq = self.codec.normalize(record.sequence)
+        sequence = self.codec.normalize(record.sequence)
         normalized_pattern = self.codec.normalize(query.pattern)
 
         if not normalized_pattern:
             raise ValueError("Pattern must not be empty")
-        if not seq:
+        if not sequence:
             return
 
-        target = self.codec.encode_target(seq)
+        target = self.codec.encode_target(sequence)
         storage = target.data
         sequence_length = len(target)
 
-        if sequence_length != len(seq):
-            raise ValueError("Encoded target length does not match normalized sequence length")
+        if sequence_length != len(sequence):
+            raise ValueError("Encoded target length does not match sequence length")
         if not storage:
             return
 
         shm = shared_memory.SharedMemory(create=True, size=len(storage))
-        buf = shm.buf
-        assert buf is not None
-
-        buf[: len(storage)] = storage
-        buf.release()
+        buffer = shm.buf
+        assert buffer is not None
+        buffer[: len(storage)] = storage
+        buffer.release()
 
         try:
             yield from self._search_shared(
                 record_name=record.name,
-                seq=seq,
+                sequence=sequence,
                 query=query,
                 normalized_pattern=normalized_pattern,
                 shm_name=shm.name,
@@ -200,8 +174,9 @@ class ChunkedProcessMatcher:
 
     def _search_shared(
         self,
+        *,
         record_name: str,
-        seq: str,
+        sequence: str,
         query: SearchQuery,
         normalized_pattern: str,
         shm_name: str,
@@ -210,22 +185,19 @@ class ChunkedProcessMatcher:
         target_encoding: TargetEncoding,
     ) -> Iterable[Match]:
         patterns = [(normalized_pattern, "+")]
-
         if query.revcomp:
             patterns.append((self.codec.reverse_complement(normalized_pattern), "-"))
 
         with ProcessPoolExecutor(max_workers=self.workers) as pool:
             for pattern, strand in patterns:
                 query_symbols = self.codec.encode_query(pattern)
-                query_len = len(query_symbols)
+                query_length = len(query_symbols)
 
-                if not query_symbols:
-                    raise ValueError("Pattern must not be empty")
-                if query_len > sequence_length and not query.circular:
+                if query_length > sequence_length and not query.circular:
                     continue
 
                 total_starts = (
-                    sequence_length if query.circular else sequence_length - query_len + 1
+                    sequence_length if query.circular else sequence_length - query_length + 1
                 )
                 if total_starts <= 0:
                     continue
@@ -259,9 +231,9 @@ class ChunkedProcessMatcher:
                             if query.circular
                             else raw_hit.zero_end + 1,
                             matched=self._matched_sequence(
-                                seq=seq,
+                                sequence=sequence,
                                 start=raw_hit.zero_start,
-                                length=query_len,
+                                length=query_length,
                                 circular=query.circular,
                             ),
                             circular=raw_hit.circular,
@@ -269,13 +241,14 @@ class ChunkedProcessMatcher:
 
     @staticmethod
     def _matched_sequence(
-        seq: str,
+        *,
+        sequence: str,
         start: int,
         length: int,
         circular: bool,
     ) -> str:
         if not circular:
-            return seq[start : start + length]
+            return sequence[start : start + length]
 
-        sequence_length = len(seq)
-        return "".join(seq[(start + offset) % sequence_length] for offset in range(length))
+        sequence_length = len(sequence)
+        return "".join(sequence[(start + offset) % sequence_length] for offset in range(length))

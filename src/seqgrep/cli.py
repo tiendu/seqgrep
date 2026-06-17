@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import __version__
 from .models import SequenceType
 
 
@@ -11,66 +12,56 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="seqgrep",
         description=(
-            "Search nucleotide or amino-acid sequences with compact target "
-            "encoding. Nucleotide mode is the default."
+            "Search nucleotide or amino-acid FASTA/FASTQ records. "
+            "The default is exact nucleotide matching."
         ),
     )
 
-    parser.add_argument("pattern", help="Pattern to search, e.g. ATGNNRY or MTEYK")
-    parser.add_argument("input", type=Path, help="Input FASTA/FASTQ file, optionally .gz")
-
+    parser.add_argument("pattern", help="Sequence pattern, e.g. ATGNNRY or MTEYK")
+    parser.add_argument("input", type=Path, help="FASTA/FASTQ input, optionally gzip")
     parser.add_argument(
         "-t",
         "--sequence-type",
-        choices=tuple(sequence_type.value for sequence_type in SequenceType),
+        choices=tuple(item.value for item in SequenceType),
         default=SequenceType.NUCLEOTIDE.value,
-        help=(
-            "Biological sequence type. Default: nucleotide. Amino-acid mode "
-            "uses exact five-bit protein encoding."
-        ),
+        help="Sequence alphabet. Default: nucleotide.",
     )
     parser.add_argument(
         "--ambig",
         action="store_true",
-        help=("Enable IUPAC ambiguity matching. Valid only with --sequence-type nucleotide."),
+        help="Enable IUPAC nucleotide compatibility matching.",
     )
     parser.add_argument(
         "--revcomp",
         action="store_true",
-        help=(
-            "Also search the reverse-complement pattern. Valid only with "
-            "--sequence-type nucleotide."
-        ),
+        help="Also search the reverse complement; nucleotide mode only.",
     )
     parser.add_argument(
         "--circular",
         action="store_true",
-        help="Allow matches crossing the sequence boundary.",
+        help="Allow matches to cross the sequence boundary.",
     )
-    parser.add_argument(
-        "--with-header",
-        action="store_true",
-        help="Print TSV header.",
-    )
+    parser.add_argument("--with-header", action="store_true", help="Print a TSV header.")
     parser.add_argument(
         "--format",
         choices=("auto", "fasta", "fastq"),
         default="auto",
-        help="Input format. Default: infer from extension.",
+        help="Input format. Default: infer from the filename.",
     )
     parser.add_argument(
         "-j",
         "--jobs",
         type=int,
         default=1,
-        help="Number of worker processes for each sequence. Use 1 for serial mode.",
+        help="Worker processes per record. Default: 1.",
     )
     parser.add_argument(
         "--chunk-size",
         type=int,
         default=1_000_000,
-        help="Number of candidate start positions per worker job when --jobs > 1.",
+        help="Candidate starts per multiprocessing job.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     return parser
 
