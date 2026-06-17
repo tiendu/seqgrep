@@ -32,6 +32,27 @@ IUPAC_MASKS: dict[str, int] = {
     "N": A_MASK | C_MASK | G_MASK | T_MASK,
 }
 
+# Exact nucleotide codes. Canonical symbols retain their two-bit values so a
+# canonical target can use the same packed storage. U is treated as T.
+NUCLEOTIDE_CODES: dict[str, int] = {
+    "A": 0,
+    "C": 1,
+    "G": 2,
+    "T": 3,
+    "U": 3,
+    "R": 4,
+    "Y": 5,
+    "S": 6,
+    "W": 7,
+    "K": 8,
+    "M": 9,
+    "B": 10,
+    "D": 11,
+    "H": 12,
+    "V": 13,
+    "N": 14,
+}
+
 COMPLEMENT: dict[str, str] = {
     "A": "T",
     "C": "G",
@@ -53,37 +74,48 @@ COMPLEMENT: dict[str, str] = {
 
 
 def normalize_sequence(seq: str) -> str:
-    """Remove whitespace and normalize sequence symbols to uppercase."""
+    """Remove whitespace and normalize nucleotide symbols to uppercase."""
     return "".join(seq.split()).upper()
 
 
-def encode_iupac_query(seq: str) -> bytes:
-    """Encode an IUPAC nucleotide sequence as one four-bit mask per byte."""
+def encode_nucleotide_query(seq: str) -> bytes:
+    """Encode a nucleotide query for exact symbol matching."""
     result = bytearray()
 
-    for pos, base in enumerate(normalize_sequence(seq), start=1):
+    for position, base in enumerate(normalize_sequence(seq), start=1):
+        try:
+            result.append(NUCLEOTIDE_CODES[base])
+        except KeyError as exc:
+            raise ValueError(f"Unsupported nucleotide {base!r} at position {position}") from exc
+
+    return bytes(result)
+
+
+def encode_iupac_query(seq: str) -> bytes:
+    """Encode an IUPAC query as one four-bit compatibility mask per byte."""
+    result = bytearray()
+
+    for position, base in enumerate(normalize_sequence(seq), start=1):
         try:
             result.append(IUPAC_MASKS[base])
         except KeyError as exc:
             raise ValueError(
-                f"Unsupported IUPAC nucleotide {base!r} at position {pos}"
+                f"Unsupported IUPAC nucleotide {base!r} at position {position}"
             ) from exc
 
     return bytes(result)
 
 
 def encode_iupac(seq: str) -> bytes:
-    """Backward-compatible alias for encode_iupac_query()."""
+    """Backward-compatible alias for :func:`encode_iupac_query`."""
     return encode_iupac_query(seq)
 
 
 def encode_canonical_2bit(seq: str) -> tuple[bytes, int]:
-    """Pack a canonical nucleotide sequence using two bits per base.
+    """Pack A, C, G, T, or U using two bits per nucleotide.
 
-    Supported symbols are A, C, G, T, and U. U is encoded as T.
-
-    Returns:
-        A tuple of packed bytes and the normalized sequence length.
+    U uses the same code as T. The returned length is the number of logical
+    symbols rather than the number of physical bytes.
     """
     normalized = normalize_sequence(seq)
     packed = bytearray((len(normalized) + 3) // 4)
@@ -104,14 +136,17 @@ def encode_canonical_2bit(seq: str) -> tuple[bytes, int]:
     return bytes(packed), len(normalized)
 
 
-def get_2bit_base(packed: bytes, index: int, length: int) -> int:
-    """Return the two-bit code at index from a packed canonical sequence."""
+def get_2bit_base(
+    packed: bytes | memoryview,
+    index: int,
+    length: int,
+) -> int:
+    """Return one raw two-bit nucleotide code from packed storage."""
     if index < 0 or index >= length:
         raise IndexError(f"Base index out of range: {index}")
 
     byte_index = index // 4
     shift = 6 - (index % 4) * 2
-
     return (packed[byte_index] >> shift) & 0b11
 
 
@@ -123,7 +158,5 @@ def reverse_complement(seq: str) -> str:
         return "".join(COMPLEMENT[base] for base in reversed(normalized))
     except KeyError as exc:
         raise ValueError(
-            "Unsupported base in reverse-complement pattern: "
-            f"{exc.args[0]!r}"
+            f"Unsupported base in reverse-complement pattern: {exc.args[0]!r}"
         ) from exc
-

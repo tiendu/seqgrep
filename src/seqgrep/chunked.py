@@ -5,7 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import shared_memory
 
-from .codecs import SequenceCodec, TargetEncoding
+from .codecs import SequenceCodec, TargetEncoding, decode_target_symbol
 from .models import FastaRecord, Match, SearchQuery
 
 
@@ -42,21 +42,16 @@ def _chunk_ranges(total_starts: int, chunk_size: int) -> Iterator[tuple[int, int
 def _target_symbol(
     storage: memoryview,
     index: int,
+    sequence_length: int,
     encoding: TargetEncoding,
 ) -> int:
     """Read one logical target symbol from shared-memory storage."""
-    if encoding == TargetEncoding.BYTE:
-        return storage[index]
-
-    if encoding == TargetEncoding.PACKED_CANONICAL_2BIT:
-        byte_index = index // 4
-        shift = 6 - (index % 4) * 2
-        code = (storage[byte_index] >> shift) & 0b11
-
-        # IUPAC compatibility expects singleton masks, not raw two-bit codes.
-        return 1 << code
-
-    raise ValueError(f"Unsupported target encoding: {encoding}")
+    return decode_target_symbol(
+        storage=storage,
+        index=index,
+        length=sequence_length,
+        encoding=encoding,
+    )
 
 
 def _window_matches(
@@ -76,6 +71,7 @@ def _window_matches(
             target_symbol = _target_symbol(
                 storage=storage,
                 index=target_index,
+                sequence_length=sequence_length,
                 encoding=target_encoding,
             )
 
@@ -89,6 +85,7 @@ def _window_matches(
         target_symbol = _target_symbol(
             storage=storage,
             index=target_index,
+            sequence_length=sequence_length,
             encoding=target_encoding,
         )
 
@@ -143,7 +140,7 @@ class ChunkedProcessMatcher:
 
     Workers share the physical target storage while candidate ranges are based
     on the target's logical sequence length. This distinction is essential for
-    packed two-bit DNA, where four logical bases occupy one stored byte.
+    packed targets, where logical symbols and physical bytes differ.
     """
 
     def __init__(
@@ -175,9 +172,7 @@ class ChunkedProcessMatcher:
         sequence_length = len(target)
 
         if sequence_length != len(seq):
-            raise ValueError(
-                "Encoded target length does not match normalized sequence length"
-            )
+            raise ValueError("Encoded target length does not match normalized sequence length")
         if not storage:
             return
 
@@ -230,9 +225,7 @@ class ChunkedProcessMatcher:
                     continue
 
                 total_starts = (
-                    sequence_length
-                    if query.circular
-                    else sequence_length - query_len + 1
+                    sequence_length if query.circular else sequence_length - query_len + 1
                 )
                 if total_starts <= 0:
                     continue
@@ -285,7 +278,4 @@ class ChunkedProcessMatcher:
             return seq[start : start + length]
 
         sequence_length = len(seq)
-        return "".join(
-            seq[(start + offset) % sequence_length]
-            for offset in range(length)
-        )
+        return "".join(seq[(start + offset) % sequence_length] for offset in range(length))

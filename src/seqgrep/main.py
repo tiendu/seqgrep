@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 from .cli import parse_args
 from .fasta import FastaFileReader
-from .models import Match, SearchQuery
+from .models import Match, SearchQuery, SequenceType
 from .planner import SearchPlanner
 
 
@@ -33,6 +33,7 @@ def run(args: argparse.Namespace) -> int:
         revcomp=args.revcomp,
         circular=args.circular,
         ambig=args.ambig,
+        sequence_type=SequenceType(args.sequence_type),
     )
 
     plan = SearchPlanner().plan(

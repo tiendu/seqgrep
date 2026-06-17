@@ -51,11 +51,7 @@ class WindowMatcher:
         if pattern_len > seq_len and not circular:
             return
 
-        max_starts = (
-            seq_len
-            if circular
-            else seq_len - pattern_len + 1
-        )
+        max_starts = seq_len if circular else seq_len - pattern_len + 1
 
         for zero_start in range(max_starts):
             if not self._window_matches(
@@ -128,8 +124,4 @@ class WindowMatcher:
 
         seq_len = len(seq)
 
-        return "".join(
-            seq[(start + offset) % seq_len]
-            for offset in range(length)
-        )
-
+        return "".join(seq[(start + offset) % seq_len] for offset in range(length))

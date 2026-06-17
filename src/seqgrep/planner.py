@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .chunked import ChunkedProcessMatcher
-from .codecs import IupacDnaCodec, LiteralCodec
-from .models import SearchQuery, SequenceMatcher
+from .codecs import IupacNucleotideCodec, NucleotideCodec, ProteinCodec, SequenceCodec
+from .models import SearchQuery, SequenceMatcher, SequenceType
 from .window import WindowMatcher
 
 
@@ -15,7 +15,7 @@ class SearchPlan:
 
 class SearchPlanner:
     def plan(self, query: SearchQuery, jobs: int, chunk_size: int) -> SearchPlan:
-        codec = IupacDnaCodec() if query.ambig else LiteralCodec()
+        codec = self._select_codec(query)
 
         if jobs > 1:
             return SearchPlan(
@@ -27,3 +27,17 @@ class SearchPlanner:
             )
 
         return SearchPlan(matcher=WindowMatcher(codec))
+
+    @staticmethod
+    def _select_codec(query: SearchQuery) -> SequenceCodec:
+        if query.sequence_type == SequenceType.AMINO_ACID:
+            if query.ambig:
+                raise ValueError("--ambig is only valid for nucleotide sequences")
+            if query.revcomp:
+                raise ValueError("--revcomp is only valid for nucleotide sequences")
+            return ProteinCodec()
+
+        if query.ambig:
+            return IupacNucleotideCodec()
+
+        return NucleotideCodec()

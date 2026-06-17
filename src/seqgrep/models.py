@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
+
+
+class SequenceType(str, Enum):
+    NUCLEOTIDE = "nucleotide"
+    AMINO_ACID = "amino-acid"
 
 
 @dataclass(frozen=True)
@@ -17,6 +23,7 @@ class SearchQuery:
     revcomp: bool = False
     circular: bool = False
     ambig: bool = False
+    sequence_type: SequenceType = SequenceType.NUCLEOTIDE
 
 
 @dataclass(frozen=True)

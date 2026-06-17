@@ -152,4 +152,3 @@ def _next_nonempty_line(handle: TextIO) -> str | None:
         if line:
             return line
     return None
-

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seqgrep"
-version = "0.1.0"
-description = "Search biological sequences with literal or IUPAC-aware matching, reverse-complement, circular DNA, FASTA/FASTQ, gzip, and chunked multiprocessing support."
+version = "0.2.0"
+description = "Search nucleotide and amino-acid sequences with compact encodings, IUPAC matching, FASTA/FASTQ, gzip, and multiprocessing."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
