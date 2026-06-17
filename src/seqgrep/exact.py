@@ -13,27 +13,33 @@ class ExactMatcher:
         self.codec = codec
 
     def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
-        sequence = self.codec.normalize(record.sequence)
-        pattern = self.codec.normalize(query.pattern)
+        sequence = record.sequence
+        pattern = query.pattern
 
         if not pattern:
             raise ValueError("Pattern must not be empty")
         if not sequence:
             return
 
+        sequence_key = self.codec.comparison_text(sequence)
+        pattern_key = self.codec.comparison_text(pattern)
+
         yield from self._search_one(
             record_name=record.name,
             sequence=sequence,
-            pattern=pattern,
+            sequence_key=sequence_key,
+            pattern_key=pattern_key,
             strand="+",
             circular=query.circular,
         )
 
         if query.revcomp:
+            reverse_pattern = self.codec.reverse_complement(pattern)
             yield from self._search_one(
                 record_name=record.name,
                 sequence=sequence,
-                pattern=self.codec.reverse_complement(pattern),
+                sequence_key=sequence_key,
+                pattern_key=self.codec.comparison_text(reverse_pattern),
                 strand="-",
                 circular=query.circular,
             )
@@ -43,12 +49,11 @@ class ExactMatcher:
         *,
         record_name: str,
         sequence: str,
-        pattern: str,
+        sequence_key: str,
+        pattern_key: str,
         strand: str,
         circular: bool,
     ) -> Iterable[Match]:
-        sequence_key = self.codec.comparison_text(sequence)
-        pattern_key = self.codec.comparison_text(pattern)
         sequence_length = len(sequence_key)
         pattern_length = len(pattern_key)
 

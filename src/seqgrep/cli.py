@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
-from .models import SequenceType
+from .models import AmbigMode, SequenceType
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,9 +27,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sequence alphabet. Default: nucleotide.",
     )
     parser.add_argument(
+        "--ambig-mode",
+        choices=tuple(item.value for item in AmbigMode),
+        default=AmbigMode.NONE.value,
+        help=(
+            "IUPAC nucleotide ambiguity: none for exact matching, query for "
+            "query-side ambiguity, or both for symmetric query/target ambiguity. "
+            "Default: none."
+        ),
+    )
+    parser.add_argument(
         "--ambig",
         action="store_true",
-        help="Enable IUPAC nucleotide compatibility matching.",
+        help="Backward-compatible alias for --ambig-mode query.",
     )
     parser.add_argument(
         "--revcomp",
@@ -70,9 +80,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.ambig:
+        if args.ambig_mode == AmbigMode.BOTH.value:
+            parser.error("--ambig cannot be combined with --ambig-mode both")
+        args.ambig_mode = AmbigMode.QUERY.value
+
     if args.sequence_type == SequenceType.AMINO_ACID.value:
-        if args.ambig:
-            parser.error("--ambig is only valid for nucleotide sequences")
+        if args.ambig_mode != AmbigMode.NONE.value:
+            parser.error("--ambig-mode is only valid for nucleotide sequences")
         if args.revcomp:
             parser.error("--revcomp is only valid for nucleotide sequences")
 

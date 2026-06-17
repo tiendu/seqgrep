@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from array import array
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from multiprocessing import shared_memory
+from multiprocessing import get_context, shared_memory
 
 from .codecs import SequenceCodec, TargetEncoding, decode_target_symbol
 from .models import FastaRecord, Match, SearchQuery
@@ -18,17 +19,8 @@ class _ChunkJob:
     query_symbols: bytes
     start_begin: int
     start_end: int
-    strand: str
     circular: bool
     codec: SequenceCodec
-
-
-@dataclass(frozen=True, slots=True)
-class _RawHit:
-    strand: str
-    zero_start: int
-    zero_end: int
-    circular: bool
 
 
 def _chunk_ranges(total_starts: int, chunk_size: int) -> Iterator[tuple[int, int]]:
@@ -76,16 +68,14 @@ def _window_matches(
     return True
 
 
-def _search_chunk(job: _ChunkJob) -> list[_RawHit]:
+def _search_chunk(job: _ChunkJob) -> array[int]:
     shm = shared_memory.SharedMemory(name=job.shm_name)
     buffer = shm.buf
     assert buffer is not None
     storage = buffer[: job.stored_size]
 
     try:
-        hits: list[_RawHit] = []
-        query_length = len(job.query_symbols)
-
+        hits = array("Q")
         for zero_start in range(job.start_begin, job.start_end):
             if not _window_matches(
                 storage=storage,
@@ -98,15 +88,7 @@ def _search_chunk(job: _ChunkJob) -> list[_RawHit]:
             ):
                 continue
 
-            zero_end = zero_start + query_length - 1
-            hits.append(
-                _RawHit(
-                    strand=job.strand,
-                    zero_start=zero_start,
-                    zero_end=zero_end,
-                    circular=job.circular and zero_end >= job.sequence_length,
-                )
-            )
+            hits.append(zero_start)
 
         return hits
     finally:
@@ -134,8 +116,8 @@ class ChunkedProcessMatcher:
         self.chunk_size = chunk_size
 
     def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
-        sequence = self.codec.normalize(record.sequence)
-        normalized_pattern = self.codec.normalize(query.pattern)
+        sequence = record.sequence
+        normalized_pattern = query.pattern
 
         if not normalized_pattern:
             raise ValueError("Pattern must not be empty")
@@ -188,7 +170,10 @@ class ChunkedProcessMatcher:
         if query.revcomp:
             patterns.append((self.codec.reverse_complement(normalized_pattern), "-"))
 
-        with ProcessPoolExecutor(max_workers=self.workers) as pool:
+        with ProcessPoolExecutor(
+            max_workers=self.workers,
+            mp_context=get_context("spawn"),
+        ) as pool:
             for pattern, strand in patterns:
                 query_symbols = self.codec.encode_query(pattern)
                 query_length = len(query_symbols)
@@ -211,7 +196,6 @@ class ChunkedProcessMatcher:
                         query_symbols=query_symbols,
                         start_begin=start_begin,
                         start_end=start_end,
-                        strand=strand,
                         circular=query.circular,
                         codec=self.codec,
                     )
@@ -221,22 +205,23 @@ class ChunkedProcessMatcher:
                     )
                 )
 
-                for raw_hits in pool.map(_search_chunk, jobs):
-                    for raw_hit in raw_hits:
+                for zero_starts in pool.map(_search_chunk, jobs):
+                    for zero_start in zero_starts:
+                        zero_end = zero_start + query_length - 1
                         yield Match(
                             record=record_name,
-                            strand=raw_hit.strand,
-                            start=raw_hit.zero_start + 1,
-                            end=(raw_hit.zero_end % sequence_length) + 1
+                            strand=strand,
+                            start=zero_start + 1,
+                            end=(zero_end % sequence_length) + 1
                             if query.circular
-                            else raw_hit.zero_end + 1,
+                            else zero_end + 1,
                             matched=self._matched_sequence(
                                 sequence=sequence,
-                                start=raw_hit.zero_start,
+                                start=zero_start,
                                 length=query_length,
                                 circular=query.circular,
                             ),
-                            circular=raw_hit.circular,
+                            circular=query.circular and zero_end >= sequence_length,
                         )
 
     @staticmethod

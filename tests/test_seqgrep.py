@@ -8,23 +8,28 @@ import pytest
 from seqgrep.alphabets import (
     NUCLEOTIDE_EXACT_CODES,
     NUCLEOTIDE_IUPAC_MASKS,
+    NUCLEOTIDE_IUPAC_QUERY_MASKS,
+    NUCLEOTIDE_IUPAC_TARGET_MASKS,
     PROTEIN_5BIT_CODES,
     PROTEIN_SYMBOLS,
     encode_nucleotide_exact,
     encode_nucleotide_iupac,
+    encode_nucleotide_iupac_query,
+    encode_nucleotide_iupac_target,
     encode_protein_exact,
     nucleotide_exact_text,
     pack_nucleotide_2bit,
+    pack_nucleotide_iupac_masks_5bit,
     pack_protein_5bit,
     protein_exact_text,
     reverse_complement_nucleotide,
     unpack_nucleotide_2bit,
+    unpack_nucleotide_iupac_mask_5bit,
     unpack_protein_5bit,
 )
 from seqgrep.chunked import ChunkedProcessMatcher
 from seqgrep.cli import parse_args
 from seqgrep.codecs import (
-    ByteTarget,
     IupacNucleotideCodec,
     NucleotideCodec,
     PackedTarget,
@@ -33,7 +38,7 @@ from seqgrep.codecs import (
 )
 from seqgrep.exact import ExactMatcher
 from seqgrep.fasta import FastaFileReader
-from seqgrep.models import FastaRecord, Match, SearchQuery, SequenceType
+from seqgrep.models import AmbigMode, FastaRecord, Match, SearchQuery, SequenceType
 from seqgrep.planner import SearchPlanner
 from seqgrep.window import WindowMatcher
 
@@ -63,9 +68,28 @@ def test_exact_nucleotide_codes() -> None:
     assert encode_nucleotide_exact("ACGTURYN-.") == expected
 
 
-def test_iupac_nucleotide_masks() -> None:
-    expected = bytes(NUCLEOTIDE_IUPAC_MASKS[symbol] for symbol in "ACGTRYN-.")
+def test_iupac_nucleotide_query_masks() -> None:
+    expected = bytes(NUCLEOTIDE_IUPAC_QUERY_MASKS[symbol] for symbol in "ACGTRYN-.")
+    assert encode_nucleotide_iupac_query("ACGTRYN-.") == expected
     assert encode_nucleotide_iupac("ACGTRYN-.") == expected
+    assert NUCLEOTIDE_IUPAC_MASKS is NUCLEOTIDE_IUPAC_QUERY_MASKS
+
+
+def test_iupac_nucleotide_target_masks_are_asymmetric() -> None:
+    assert encode_nucleotide_iupac_target("ACGTUNRY-.") == bytes(
+        NUCLEOTIDE_IUPAC_TARGET_MASKS[symbol] for symbol in "ACGTUNRY-."
+    )
+    assert encode_nucleotide_iupac_target("NRY") == bytes([0, 0, 0])
+
+
+def test_iupac_five_bit_masks_round_trip_for_symmetric_targets() -> None:
+    sequence = "ACGTRYSWKMBDHVN-."
+    packed, length = pack_nucleotide_iupac_masks_5bit(sequence)
+
+    assert len(packed) == (length * 5 + 7) // 8
+    assert [
+        unpack_nucleotide_iupac_mask_5bit(packed, index, length) for index in range(length)
+    ] == [NUCLEOTIDE_IUPAC_QUERY_MASKS[symbol] for symbol in sequence]
 
 
 def test_nucleotide_encoders_normalize_case_and_whitespace() -> None:
@@ -79,9 +103,15 @@ def test_nucleotide_encoders_reject_invalid_symbol() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Unsupported IUPAC nucleotide symbol 'X' at position 3",
+        match="Unsupported IUPAC nucleotide query symbol 'X' at position 3",
     ):
-        encode_nucleotide_iupac("ATX")
+        encode_nucleotide_iupac_query("ATX")
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported IUPAC nucleotide target symbol 'X' at position 3",
+    ):
+        encode_nucleotide_iupac_target("ATX")
 
 
 def test_nucleotide_exact_text_treats_u_as_t() -> None:
@@ -168,12 +198,15 @@ def test_exact_nucleotide_codec_packs_canonical_target() -> None:
     assert [target.symbol_at(index) for index in range(len(target))] == [0, 1, 2, 3, 3]
 
 
-def test_exact_nucleotide_codec_falls_back_for_iupac_target() -> None:
-    target = NucleotideCodec().encode_target("ANRY-.")
+def test_exact_nucleotide_codec_uses_five_bits_for_iupac_target() -> None:
+    sequence = "ANRY-."
+    target = NucleotideCodec().encode_target(sequence)
 
-    assert isinstance(target, ByteTarget)
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_EXACT_5BIT
+    assert len(target.data) == (len(sequence) * 5 + 7) // 8
     assert [target.symbol_at(index) for index in range(len(target))] == [
-        NUCLEOTIDE_EXACT_CODES[symbol] for symbol in "ANRY-."
+        NUCLEOTIDE_EXACT_CODES[symbol] for symbol in sequence
     ]
 
 
@@ -185,13 +218,34 @@ def test_iupac_codec_packs_canonical_target_as_masks() -> None:
     assert [target.symbol_at(index) for index in range(len(target))] == [1, 2, 4, 8, 8]
 
 
-def test_iupac_codec_falls_back_for_ambiguous_target() -> None:
-    target = IupacNucleotideCodec().encode_target("ANRY-.")
+def test_iupac_codec_uses_validity_and_gap_bitmaps_for_mixed_target() -> None:
+    sequence = "ANRY-."
+    target = IupacNucleotideCodec().encode_target(sequence)
 
-    assert isinstance(target, ByteTarget)
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_2BIT_VALID_GAP_MASK
     assert [target.symbol_at(index) for index in range(len(target))] == [
-        NUCLEOTIDE_IUPAC_MASKS[symbol] for symbol in "ANRY-."
+        NUCLEOTIDE_IUPAC_TARGET_MASKS[symbol] for symbol in sequence
     ]
+
+
+def test_iupac_codec_uses_full_masks_for_symmetric_target() -> None:
+    sequence = "ANRY-."
+    target = IupacNucleotideCodec(allow_target_ambiguity=True).encode_target(sequence)
+
+    assert isinstance(target, PackedTarget)
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_IUPAC_5BIT_MASK
+    assert [target.symbol_at(index) for index in range(len(target))] == [
+        NUCLEOTIDE_IUPAC_QUERY_MASKS[symbol] for symbol in sequence
+    ]
+
+
+def test_iupac_codec_uses_three_bits_per_base_without_gaps() -> None:
+    sequence = "ACGT" + "N" * 12
+    target = IupacNucleotideCodec().encode_target(sequence)
+
+    assert target.encoding is TargetEncoding.NUCLEOTIDE_2BIT_VALID_MASK
+    assert len(target.data) == (len(sequence) + 3) // 4 + (len(sequence) + 7) // 8
 
 
 def test_protein_codec_uses_packed_5bit_target() -> None:
@@ -238,6 +292,22 @@ def test_planner_uses_window_matcher_for_serial_iupac() -> None:
     assert isinstance(plan.matcher, WindowMatcher)
 
 
+def test_search_query_ambig_alias_selects_query_mode() -> None:
+    query = SearchQuery("ATN", ambig=True)
+
+    assert query.ambig is True
+    assert query.ambig_mode is AmbigMode.QUERY
+
+
+def test_planner_uses_symmetric_iupac_codec_for_both_mode() -> None:
+    query = SearchQuery("AAA", ambig_mode=AmbigMode.BOTH)
+    plan = SearchPlanner().plan(query, jobs=1, chunk_size=100)
+
+    assert isinstance(plan.matcher, WindowMatcher)
+    assert isinstance(plan.matcher.codec, IupacNucleotideCodec)
+    assert plan.matcher.codec.allow_target_ambiguity is True
+
+
 def test_planner_uses_chunked_matcher_when_jobs_exceed_one() -> None:
     plan = SearchPlanner().plan(SearchQuery("ATG"), jobs=2, chunk_size=100)
     assert isinstance(plan.matcher, ChunkedProcessMatcher)
@@ -277,12 +347,64 @@ def test_iupac_gaps_are_equivalent() -> None:
     ]
 
 
-def test_iupac_n_matches_any_canonical_base() -> None:
+def test_iupac_query_n_matches_any_canonical_base() -> None:
+    hits = search_with_planner(
+        FastaRecord("seq1", "ACGT"),
+        SearchQuery("N", ambig=True),
+    )
+    assert hit_values(hits) == [
+        (1, 1, "A"),
+        (2, 2, "C"),
+        (3, 3, "G"),
+        (4, 4, "T"),
+    ]
+
+
+def test_iupac_target_n_does_not_act_as_wildcard() -> None:
     hits = search_with_planner(
         FastaRecord("seq1", "ATGNATGA"),
         SearchQuery("ATGN", ambig=True),
     )
-    assert hit_values(hits) == [(1, 4, "ATGN"), (5, 8, "ATGA")]
+    assert hit_values(hits) == [(5, 8, "ATGA")]
+
+
+def test_iupac_query_does_not_match_unknown_target_region() -> None:
+    record = FastaRecord("assembly_gap", "N" * 256)
+
+    assert search_with_planner(record, SearchQuery("ACGT", ambig=True)) == []
+    assert search_with_planner(record, SearchQuery("NNNN", ambig=True)) == []
+
+
+def test_both_mode_matches_ambiguous_target_symbols() -> None:
+    hits = search_with_planner(
+        FastaRecord("uncertain", "NNANN"),
+        SearchQuery("AAAAA", ambig_mode=AmbigMode.BOTH),
+    )
+
+    assert hit_values(hits) == [(1, 5, "NNANN")]
+
+
+def test_both_mode_matches_n_query_to_n_target() -> None:
+    hits = search_with_planner(
+        FastaRecord("uncertain", "NNNNN"),
+        SearchQuery("NNNNN", ambig_mode=AmbigMode.BOTH),
+    )
+
+    assert hit_values(hits) == [(1, 5, "NNNNN")]
+
+
+def test_query_mode_still_rejects_ambiguous_target_symbols() -> None:
+    hits = search_with_planner(
+        FastaRecord("uncertain", "NNANN"),
+        SearchQuery("AAAAA", ambig_mode=AmbigMode.QUERY),
+    )
+
+    assert hits == []
+
+
+def test_exact_mode_still_matches_target_n_literally() -> None:
+    hits = search_with_planner(FastaRecord("gap", "NNNN"), SearchQuery("NN"))
+    assert hit_values(hits) == [(1, 2, "NN"), (2, 3, "NN"), (3, 4, "NN")]
 
 
 def test_protein_mode_matches_exact_amino_acids() -> None:
@@ -302,7 +424,7 @@ def test_protein_extended_symbols_are_literal() -> None:
 
 
 def test_protein_mode_rejects_ambig_and_revcomp() -> None:
-    with pytest.raises(ValueError, match="--ambig is only valid"):
+    with pytest.raises(ValueError, match="--ambig-mode is only valid"):
         SearchPlanner().plan(
             SearchQuery("MTE", ambig=True, sequence_type=SequenceType.AMINO_ACID),
             jobs=1,
@@ -387,7 +509,7 @@ def test_chunked_exact_nucleotide_packed_target() -> None:
     assert hit_values(hits) == [(6, 9, "TGCA")]
 
 
-def test_chunked_exact_nucleotide_byte_fallback() -> None:
+def test_chunked_exact_nucleotide_five_bit_target() -> None:
     assert_chunked_matches_serial(
         FastaRecord("seq1", "ATGNATGA"),
         SearchQuery("ATGN"),
@@ -403,12 +525,30 @@ def test_chunked_iupac_packed_target() -> None:
     )
 
 
-def test_chunked_iupac_byte_fallback_and_gaps() -> None:
+def test_chunked_iupac_validity_and_gap_bitmaps() -> None:
     assert_chunked_matches_serial(
         FastaRecord("seq1", "A-CATGNA.C"),
         SearchQuery("A.C", ambig=True),
         chunk_size=2,
     )
+
+
+def test_chunked_iupac_does_not_match_unknown_target_region() -> None:
+    hits = assert_chunked_matches_serial(
+        FastaRecord("assembly_gap", "N" * 256),
+        SearchQuery("NNNN", ambig=True),
+        chunk_size=31,
+    )
+    assert hits == []
+
+
+def test_chunked_symmetric_iupac_target_matches_serial() -> None:
+    hits = assert_chunked_matches_serial(
+        FastaRecord("uncertain", "NNANN"),
+        SearchQuery("AAAAA", ambig_mode=AmbigMode.BOTH),
+        chunk_size=2,
+    )
+    assert hit_values(hits) == [(1, 5, "NNANN")]
 
 
 def test_chunked_protein_5bit_target() -> None:
@@ -436,6 +576,11 @@ def test_chunked_longer_circular_pattern() -> None:
     )
 
 
+def test_models_normalize_symbols_once_at_the_boundary() -> None:
+    assert FastaRecord("seq", "a c\ng").sequence == "ACG"
+    assert SearchQuery("a t\ng").pattern == "ATG"
+
+
 # ---------------------------------------------------------------------------
 # CLI and readers
 # ---------------------------------------------------------------------------
@@ -445,6 +590,37 @@ def test_cli_defaults_to_nucleotide(tmp_path: Path) -> None:
     args = parse_args(["ATG", str(tmp_path / "seq.fa")])
     assert args.sequence_type == SequenceType.NUCLEOTIDE.value
     assert args.ambig is False
+    assert args.ambig_mode == AmbigMode.NONE.value
+
+
+def test_cli_ambig_alias_selects_query_mode(tmp_path: Path) -> None:
+    args = parse_args(["ATN", str(tmp_path / "seq.fa"), "--ambig"])
+
+    assert args.ambig is True
+    assert args.ambig_mode == AmbigMode.QUERY.value
+
+
+def test_cli_accepts_explicit_ambig_modes(tmp_path: Path) -> None:
+    path = str(tmp_path / "seq.fa")
+
+    query_args = parse_args(["ATN", path, "--ambig-mode", "query"])
+    both_args = parse_args(["AAA", path, "--ambig-mode", "both"])
+
+    assert query_args.ambig_mode == AmbigMode.QUERY.value
+    assert both_args.ambig_mode == AmbigMode.BOTH.value
+
+
+def test_cli_rejects_conflicting_ambig_options(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "ATN",
+                str(tmp_path / "seq.fa"),
+                "--ambig",
+                "--ambig-mode",
+                "both",
+            ]
+        )
 
 
 def test_cli_accepts_amino_acid_mode(tmp_path: Path) -> None:
@@ -457,6 +633,8 @@ def test_cli_rejects_invalid_amino_acid_options(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit):
         parse_args(["MTE", path, "-t", "amino-acid", "--ambig"])
+    with pytest.raises(SystemExit):
+        parse_args(["MTE", path, "-t", "amino-acid", "--ambig-mode", "both"])
     with pytest.raises(SystemExit):
         parse_args(["MTE", path, "-t", "amino-acid", "--revcomp"])
 
@@ -478,9 +656,14 @@ def test_read_fasta_plain_and_gzip(tmp_path: Path) -> None:
     with gzip.open(gz, "wt", encoding="utf-8") as handle:
         handle.write(">seq1 description\nATG\nCCC\n")
 
+    upper_gz = tmp_path / "example.FA.GZ"
+    with gzip.open(upper_gz, "wt", encoding="utf-8") as handle:
+        handle.write(">seq1 description\nATG\nCCC\n")
+
     expected = [FastaRecord("seq1", "ATGCCC")]
     assert list(FastaFileReader(fasta).read()) == expected
     assert list(FastaFileReader(gz).read()) == expected
+    assert list(FastaFileReader(upper_gz).read()) == expected
 
 
 def test_read_multiline_fastq_plain_and_gzip(tmp_path: Path) -> None:

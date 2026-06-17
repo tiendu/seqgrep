@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from .chunked import ChunkedProcessMatcher
 from .codecs import IupacNucleotideCodec, NucleotideCodec, ProteinCodec
 from .exact import ExactMatcher
-from .models import SearchQuery, SequenceMatcher, SequenceType
+from .models import AmbigMode, SearchQuery, SequenceMatcher, SequenceType
 from .window import WindowMatcher
 
 
@@ -24,8 +24,8 @@ class SearchPlanner:
             raise ValueError("chunk_size must be at least 1")
 
         if query.sequence_type is SequenceType.AMINO_ACID:
-            if query.ambig:
-                raise ValueError("--ambig is only valid for nucleotide sequences")
+            if query.ambig_mode is not AmbigMode.NONE:
+                raise ValueError("--ambig-mode is only valid for nucleotide sequences")
             if query.revcomp:
                 raise ValueError("--revcomp is only valid for nucleotide sequences")
 
@@ -34,8 +34,10 @@ class SearchPlanner:
                 return SearchPlan(ChunkedProcessMatcher(protein_codec, jobs, chunk_size))
             return SearchPlan(ExactMatcher(protein_codec))
 
-        if query.ambig:
-            iupac_codec = IupacNucleotideCodec()
+        if query.ambig_mode is not AmbigMode.NONE:
+            iupac_codec = IupacNucleotideCodec(
+                allow_target_ambiguity=query.ambig_mode is AmbigMode.BOTH
+            )
             if jobs > 1:
                 return SearchPlan(ChunkedProcessMatcher(iupac_codec, jobs, chunk_size))
             return SearchPlan(WindowMatcher(iupac_codec))

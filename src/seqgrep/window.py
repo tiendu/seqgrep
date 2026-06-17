@@ -13,39 +13,40 @@ class WindowMatcher:
         self.codec = codec
 
     def search(self, record: FastaRecord, query: SearchQuery) -> Iterable[Match]:
-        yield from self._search_one(
-            record=record,
-            pattern=query.pattern,
-            strand="+",
-            circular=query.circular,
-        )
+        sequence = record.sequence
+        pattern = query.pattern
 
+        if not pattern:
+            raise ValueError("Pattern must not be empty")
+        if not sequence:
+            return
+
+        target = self.codec.encode_target(sequence)
+        patterns = [(pattern, "+")]
         if query.revcomp:
+            patterns.append((self.codec.reverse_complement(pattern), "-"))
+
+        for strand_pattern, strand in patterns:
             yield from self._search_one(
-                record=record,
-                pattern=self.codec.reverse_complement(query.pattern),
-                strand="-",
+                record_name=record.name,
+                sequence=sequence,
+                target=target,
+                pattern=strand_pattern,
+                strand=strand,
                 circular=query.circular,
             )
 
     def _search_one(
         self,
         *,
-        record: FastaRecord,
+        record_name: str,
+        sequence: str,
+        target: EncodedTarget,
         pattern: str,
         strand: str,
         circular: bool,
     ) -> Iterable[Match]:
-        sequence = self.codec.normalize(record.sequence)
-        normalized_pattern = self.codec.normalize(pattern)
-
-        if not normalized_pattern:
-            raise ValueError("Pattern must not be empty")
-        if not sequence:
-            return
-
-        query_symbols = self.codec.encode_query(normalized_pattern)
-        target = self.codec.encode_target(sequence)
+        query_symbols = self.codec.encode_query(pattern)
         sequence_length = len(target)
         pattern_length = len(query_symbols)
 
@@ -65,7 +66,7 @@ class WindowMatcher:
 
             zero_end = zero_start + pattern_length - 1
             yield Match(
-                record=record.name,
+                record=record_name,
                 strand=strand,
                 start=zero_start + 1,
                 end=(zero_end % sequence_length) + 1 if circular else zero_end + 1,
