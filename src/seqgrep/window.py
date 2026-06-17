@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .codecs import SequenceCodec
+from .codecs import EncodedTarget, SequenceCodec
 from .models import FastaRecord, Match, SearchQuery
 
 
@@ -34,22 +34,28 @@ class WindowMatcher:
         circular: bool,
     ) -> Iterable[Match]:
         seq = self.codec.normalize(record.sequence)
-        pattern = self.codec.normalize(pattern)
+        normalized_pattern = self.codec.normalize(pattern)
 
-        seq_len = len(seq)
-        pattern_len = len(pattern)
-
-        if pattern_len == 0:
+        if not normalized_pattern:
             raise ValueError("Pattern must not be empty")
-        if seq_len == 0:
+
+        if not seq:
             return
+
+        query_symbols = self.codec.encode_query(normalized_pattern)
+        target_symbols = self.codec.encode_target(seq)
+
+        seq_len = len(target_symbols)
+        pattern_len = len(query_symbols)
+
         if pattern_len > seq_len and not circular:
             return
 
-        query_symbols = self.codec.encode(pattern)
-        target_symbols = self.codec.encode(seq)
-
-        max_starts = seq_len if circular else seq_len - pattern_len + 1
+        max_starts = (
+            seq_len
+            if circular
+            else seq_len - pattern_len + 1
+        )
 
         for zero_start in range(max_starts):
             if not self._window_matches(
@@ -61,6 +67,7 @@ class WindowMatcher:
                 continue
 
             zero_end = zero_start + pattern_len - 1
+            wraps = circular and zero_end >= seq_len
 
             yield Match(
                 record=record.name,
@@ -73,30 +80,56 @@ class WindowMatcher:
                     length=pattern_len,
                     circular=circular,
                 ),
-                circular=circular and zero_end >= seq_len,
+                circular=wraps,
             )
 
     def _window_matches(
         self,
         query_symbols: bytes,
-        target_symbols: bytes,
+        target_symbols: EncodedTarget,
         start: int,
         circular: bool,
     ) -> bool:
-        seq_len = len(target_symbols)
+        compatible = self.codec.compatible
+        symbol_at = target_symbols.symbol_at
+
+        if circular:
+            seq_len = len(target_symbols)
+
+            for offset, query_symbol in enumerate(query_symbols):
+                target_index = (start + offset) % seq_len
+
+                if not compatible(
+                    query_symbol,
+                    symbol_at(target_index),
+                ):
+                    return False
+
+            return True
 
         for offset, query_symbol in enumerate(query_symbols):
-            target_index = (start + offset) % seq_len if circular else start + offset
-
-            if not self.codec.compatible(query_symbol, target_symbols[target_index]):
+            if not compatible(
+                query_symbol,
+                symbol_at(start + offset),
+            ):
                 return False
 
         return True
 
     @staticmethod
-    def _matched_sequence(seq: str, start: int, length: int, circular: bool) -> str:
+    def _matched_sequence(
+        seq: str,
+        start: int,
+        length: int,
+        circular: bool,
+    ) -> str:
         if not circular:
             return seq[start : start + length]
 
         seq_len = len(seq)
-        return "".join(seq[(start + offset) % seq_len] for offset in range(length))
+
+        return "".join(
+            seq[(start + offset) % seq_len]
+            for offset in range(length)
+        )
+
