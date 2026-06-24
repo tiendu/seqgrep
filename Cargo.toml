@@ -1,0 +1,31 @@
+[package]
+name = "seqgrep"
+version = "0.5.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Reliable nucleotide and amino-acid sequence search for FASTA and FASTQ data"
+license = "MIT"
+authors = ["Tien Du"]
+readme = "README.md"
+repository = "https://github.com/tiendu/seqgrep"
+keywords = ["bioinformatics", "fasta", "fastq", "sequence", "iupac"]
+categories = ["command-line-utilities", "science"]
+
+[lib]
+name = "seqgrep"
+path = "src/lib.rs"
+
+[[bin]]
+name = "seqgrep"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[package.metadata.docs.rs]
+all-features = true

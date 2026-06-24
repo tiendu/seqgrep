@@ -1,77 +1,70 @@
 SHELL := /bin/bash
 
-VENV := .venv
-PYTHON := $(VENV)/bin/python
-PIP := $(PYTHON) -m pip
-SEQGREP := $(VENV)/bin/seqgrep
-INSTALL_STAMP := $(VENV)/.seqgrep-installed
-
-BOOTSTRAP_PYTHON ?= python3
+CARGO ?= cargo
+PREFIX ?= $(HOME)/.local
+BINDIR ?= $(PREFIX)/bin
+SEQGREP := target/release/seqgrep
 ARGS ?=
 
-.PHONY: help venv install run test test-chr21 lint format format-check \
-	typecheck check clean
+.PHONY: help build release run install uninstall test test-chr21 lint \
+	format format-check doc package check clean
 
 help:
 	@printf '%s\n' \
-		'make install        Create or repair .venv and install development dependencies' \
-		'make run            Run seqgrep; pass arguments with ARGS="..."' \
-		'make test           Run the unit test suite' \
-		'make test-chr21     Run the chromosome 21 integration test' \
-		'make lint           Run Ruff linting' \
-		'make format         Format source and tests' \
-		'make format-check   Check formatting without changing files' \
-		'make typecheck      Run strict mypy checks' \
-		'make check          Run tests, linting, formatting, and type checking' \
-		'make clean          Remove the virtual environment and generated artifacts'
+		'make build         Build the debug binary and library' \
+		'make release       Build the optimized release binary' \
+		'make run           Run seqgrep; pass arguments with ARGS="..."' \
+		'make install       Install the release binary under ~/.local/bin' \
+		'make uninstall     Remove the installed binary' \
+		'make test          Run unit and integration tests' \
+		'make test-chr21    Run the GRCh38 chromosome 21 integration test' \
+		'make lint          Run Clippy with warnings denied' \
+		'make format        Format all Rust source' \
+		'make format-check  Verify formatting without changing files' \
+		'make doc           Build library documentation with warnings denied' \
+		'make package       Validate the publishable Cargo package' \
+		'make check         Run formatting, linting, tests, and docs' \
+		'make clean         Remove Cargo build output'
 
-venv:
-	@if [ ! -x "$(PYTHON)" ] || ! "$(PYTHON)" -m pip --version >/dev/null 2>&1; then \
-		printf '%s\n' "Creating or repairing $(VENV)"; \
-		rm -rf "$(VENV)"; \
-		"$(BOOTSTRAP_PYTHON)" -m venv "$(VENV)"; \
-		if ! "$(PYTHON)" -m pip --version >/dev/null 2>&1; then \
-			"$(PYTHON)" -m ensurepip --upgrade; \
-		fi; \
-		"$(PYTHON)" -m pip install --upgrade pip; \
-	fi
+build:
+	$(CARGO) build --locked --all-targets
 
-install: venv
-	@if [ ! -f "$(INSTALL_STAMP)" ] \
-		|| [ ! -x "$(SEQGREP)" ] \
-		|| [ pyproject.toml -nt "$(INSTALL_STAMP)" ]; then \
-		printf '%s\n' "Installing seqgrep development environment"; \
-		$(PIP) install -e ".[dev]"; \
-		touch "$(INSTALL_STAMP)"; \
-	fi
+release:
+	$(CARGO) build --locked --release
 
-run: install
-	$(SEQGREP) $(ARGS)
+run:
+	$(CARGO) run --locked -- $(ARGS)
 
-test: install
-	$(PYTHON) -m pytest
+install: release
+	install -d "$(BINDIR)"
+	install -m 0755 "$(SEQGREP)" "$(BINDIR)/seqgrep"
 
-test-chr21: install
-	SEQGREP_BIN="$(SEQGREP)" tests/test_chr21.sh
+uninstall:
+	rm -f "$(BINDIR)/seqgrep"
 
-lint: install
-	$(PYTHON) -m ruff check .
+test:
+	$(CARGO) test --locked --all-targets
+	$(CARGO) test --locked --doc
 
-format: install
-	$(PYTHON) -m ruff format .
-	$(PYTHON) -m ruff check --fix .
+test-chr21: release
+	SEQGREP_BIN="$(CURDIR)/$(SEQGREP)" tests/test_chr21.sh
 
-format-check: install
-	$(PYTHON) -m ruff format --check .
+lint:
+	$(CARGO) clippy --locked --all-targets --all-features -- -D warnings
 
-typecheck: install
-	$(PYTHON) -m mypy src
+format:
+	$(CARGO) fmt --all
 
-check: test lint format-check typecheck
+format-check:
+	$(CARGO) fmt --all -- --check
+
+doc:
+	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --locked --no-deps
+
+package:
+	$(CARGO) package --locked --allow-dirty
+
+check: format-check lint test doc
 
 clean:
-	rm -rf "$(VENV)"
-	rm -rf .pytest_cache .ruff_cache .mypy_cache
-	rm -rf build dist *.egg-info src/*.egg-info
-	find . -type d -name "__pycache__" -prune -exec rm -rf {} +
-	find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+	$(CARGO) clean

@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Override the executable when testing a local installation:
 #
-#   SEQGREP_BIN=.venv/bin/seqgrep tests/test_chr21.sh
+#   SEQGREP_BIN=target/release/seqgrep tests/test_chr21.sh
 #
 # The chromosome is cached under tests/data/ and is not removed after the test.
 
@@ -36,7 +36,7 @@ done
 if [[ ! -x "$SEQGREP_BIN" ]] && ! command -v "$SEQGREP_BIN" >/dev/null 2>&1; then
     printf '[x] seqgrep executable not found: %s\n' "$SEQGREP_BIN" >&2
     printf '    Set SEQGREP_BIN to an executable path, for example:\n' >&2
-    printf '    SEQGREP_BIN=.venv/bin/seqgrep %s\n' "$0" >&2
+    printf '    SEQGREP_BIN=target/release/seqgrep %s\n' "$0" >&2
     exit 1
 fi
 
